@@ -78,6 +78,7 @@ class Orchestrator:
             requirement = Requirement(text=requirement)
 
         run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        started = time.time()
         output_dir = Path(self.config.output_root) / run_id / "artifacts"
         tools = ToolBox(artifacts=ArtifactStore(output_dir), runner=CodeRunner())
         bb = Blackboard(requirement=requirement)
@@ -110,11 +111,13 @@ class Orchestrator:
         result.validation = bb.validation
         result.summary = bb.summary
         result.events = bb.events
-        metrics = getattr(self.provider, "metrics", None)
-        if metrics is not None:
-            result.metrics = metrics.to_dict()
-            if metrics.calls:
-                self._say(f"[orchestrator] observability: {metrics.summary()}")
+        # Always-on run observability (works offline). LLM usage is merged when present.
+        run_metrics = self._run_metrics(bb, round(time.time() - started, 3))
+        result.metrics = {"run": run_metrics}
+        llm = getattr(self.provider, "metrics", None)
+        if llm is not None and llm.calls:
+            result.metrics["llm"] = llm.to_dict()
+        self._print_observability(run_metrics, llm)
         self._persist(result)
         return result
 
@@ -244,8 +247,45 @@ class Orchestrator:
         return emit
 
     def _say(self, message: str) -> None:
-        if self.config.verbose:
+        if not self.config.verbose:
+            return
+        try:
             print(message)
+        except UnicodeEncodeError:
+            # Last-resort guard for consoles without UTF-8 (e.g. redirected on Windows).
+            print(message.encode("ascii", "replace").decode("ascii"))
+
+    @staticmethod
+    def _run_metrics(bb: Blackboard, duration_s: float) -> dict:
+        """Derive always-on monitoring metrics from the run's event log."""
+
+        def count(kind: str) -> int:
+            return sum(1 for e in bb.events if e["kind"] == kind)
+
+        report = bb.validation
+        return {
+            "duration_s": duration_s,
+            "tasks_ok": count("task"),
+            "retries": count("task_error"),
+            "repairs": count("repair"),
+            "degradations": count("degrade"),
+            "decisions": count("decision"),
+            "gates": count("gate"),
+            "halted": count("halted") > 0,
+            "artifacts": len(bb.all_artifacts()),
+            "validation": report.summary if report else "n/a",
+            "validation_passed": bool(report and report.passed),
+        }
+
+    def _print_observability(self, run: dict, llm) -> None:
+        self._say(
+            f"[observability] duration={run['duration_s']}s | tasks={run['tasks_ok']} "
+            f"retries={run['retries']} repairs={run['repairs']} "
+            f"degraded={run['degradations']} gates={run['gates']} | "
+            f"provider={self.provider.name} | validation={run['validation']}"
+        )
+        if llm is not None and llm.calls:
+            self._say(f"[observability] LLM: {llm.summary()}")
 
     def _persist(self, result: RunResult) -> None:
         run_dir = Path(self.config.output_root) / result.run_id

@@ -54,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Ensure non-ASCII log output never crashes on a non-UTF-8 console (Windows).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except Exception:
+            pass
     args = build_parser().parse_args(argv)
 
     text = args.requirement
@@ -95,10 +101,15 @@ def _print_report(result) -> None:
     if result.validation:
         print(f"Validation     : {result.validation.summary} "
               f"({'PASS' if result.validation.passed else 'REVIEW NEEDED'})")
-    if result.metrics and result.metrics.get("calls"):
-        m = result.metrics
-        print(f"LLM usage      : {len(m['calls'])} calls, {m['total_tokens']} tokens, "
-              f"~${m['est_cost_usd']:.4f}, {m['fallbacks']} fallbacks")
+    run = (result.metrics or {}).get("run", {})
+    if run:
+        print(f"Monitoring     : {run['duration_s']}s | tasks={run['tasks_ok']} "
+              f"retries={run['retries']} repairs={run['repairs']} "
+              f"degraded={run['degradations']} gates={run['gates']}")
+    llm = (result.metrics or {}).get("llm")
+    if llm and llm.get("calls"):
+        print(f"LLM usage      : {len(llm['calls'])} calls, {llm['total_tokens']} tokens, "
+              f"~${llm['est_cost_usd']:.4f}, {llm['fallbacks']} fallbacks")
     print(f"Run record     : {result.output_dir.replace('artifacts', 'result.json')}")
     summary_path = Path(result.output_dir) / "ENGINEERING_SUMMARY.md"
     if summary_path.exists():

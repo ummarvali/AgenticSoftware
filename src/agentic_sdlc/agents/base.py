@@ -56,10 +56,10 @@ class Agent(abc.ABC):
         decision = self.decide(ctx, obs)
         ctx.blackboard.log(
             "decision",
-            f"{self.name}: {decision.action} — {decision.rationale}",
+            f"{self.name}: {decision.action} - {decision.rationale}",
             agent=self.name, action=decision.action, proceed=decision.proceed,
         )
-        ctx.emit(self.name, f"decided: {decision.action} — {decision.rationale}")
+        ctx.emit(self.name, f"decided: {decision.action} - {decision.rationale}")
         if not decision.proceed:
             ctx.blackboard.log("skip", f"{self.name} chose to skip: {decision.rationale}")
             return

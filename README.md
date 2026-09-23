@@ -52,8 +52,10 @@ orchestration run on any brain:
   response the pipeline degrades to it per-stage, so a run never half-completes.
 
 Every model call is wrapped with a **timeout, bounded retries, strict JSON validation**, and
-**per-stage fallback**, and every run reports **observability** — LLM calls, tokens, latency,
-estimated cost, and fallback count (printed and saved in `result.json`).
+**per-stage fallback**. **Every run** (LLM or offline) emits **monitoring** — wall-clock
+duration, task count, retries, repairs, degradations, and gate decisions — plus LLM tokens,
+latency, cost, and fallback count when a model is used (printed and saved in `result.json`).
+Failures can be **injected on demand** (`--inject-fault code:1`) to demonstrate recovery.
 
 This is the SRE stance made concrete: an agent that is **LLM-first but never LLM-dependent**.
 For **generation**, the model authors the whole project *from the requirement*; the provider
@@ -100,6 +102,14 @@ Three principles shape the implementation:
 
 **Requirement:** Python 3.10+ (developed on 3.14). No third-party packages are needed for
 the core system.
+
+**One-command narrated demo** (all scenarios + fault injection + monitoring):
+
+```powershell
+python scripts/demo.py            # add --provider claude to run on a live model
+```
+
+Or drive it yourself:
 
 ```powershell
 # From the project root
@@ -287,6 +297,8 @@ agentic-sdlc-system/
 ├─ examples/                          Three requirement inputs + expected outputs
 │  ├─ greenfield.txt / brownfield.txt / ambiguous.txt
 │  └─ README.md
+├─ scripts/
+│  └─ demo.py                          One-command narrated demo (all scenarios + monitoring)
 ├─ src/agentic_sdlc/
 │  ├─ __init__.py                     Public API (run_pipeline, models)
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
@@ -337,12 +349,12 @@ agentic-sdlc-system/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 27 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 28 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
-   **code-generation accept + sandbox-validated fallback**), and full orchestrator runs
-   including **retry recovery**, **optional-task degradation**, **required-task halt**,
-   **human rejection**, and the **validation feedback loop**.
+   **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
+   full orchestrator runs including **retry recovery**, **optional-task degradation**,
+   **required-task halt**, **human rejection**, and the **validation feedback loop**.
 2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
    (shorten → 302 redirect → stats).
@@ -350,7 +362,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 27 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 28 tests ... OK
 ```
 
 ---

@@ -39,8 +39,17 @@ class EndToEndTests(unittest.TestCase):
                 "Build a URL shortener service."
             )
             self.assertTrue(result.validation and result.validation.passed)
-            errors = [e for e in result.events if e["kind"] == "task_error"]
-            self.assertTrue(errors, "expected a recorded retry event")
+            self.assertTrue(any(e["kind"] == "task_error" for e in result.events))
+            self.assertGreaterEqual(result.metrics["run"]["retries"], 1)
+
+    def test_run_metrics_always_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Orchestrator(_config(tmp)).run("Build a URL shortener service.")
+            run = result.metrics["run"]
+            self.assertIn("duration_s", run)
+            self.assertGreater(run["tasks_ok"], 0)
+            self.assertGreaterEqual(run["gates"], 3)  # clarify + plan + accept
+            self.assertTrue(run["validation_passed"])
 
     def test_required_task_failure_halts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +80,6 @@ class EndToEndTests(unittest.TestCase):
 
     def test_validation_feedback_loop_repairs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # The generic scaffold declares an API but ships no contract, so the first
             # validation fails 'api contract present'. The repair agent must fix it and
             # re-validation must then pass — an agent-driven feedback loop.
             result = Orchestrator(_config(tmp)).run("Make the app faster.")

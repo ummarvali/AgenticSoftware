@@ -29,12 +29,12 @@ class ArchitectAgent(Agent):
         if any(sig in text for sig in _DURABILITY_SIGNALS):
             return AgentDecision(
                 "design(durable)",
-                "NFRs imply durability/scale → recommend the SQLite backend as default",
+                "NFRs imply durability/scale -> recommend the SQLite backend as default",
                 params={"backend": "sqlite"},
             )
         return AgentDecision(
             "design(in-memory)",
-            "no durability signal → in-memory default is sufficient for the prototype",
+            "no durability signal -> in-memory default is sufficient for the prototype",
             params={"backend": "memory"},
         )
 
