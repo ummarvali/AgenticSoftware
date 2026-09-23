@@ -25,3 +25,9 @@ runs/
 .idea/
 *.swp
 .DS_Store
+
+# Secrets — never commit API keys or local env files
+.env
+.env.*
+*.key
+secrets.*
