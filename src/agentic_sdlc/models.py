@@ -253,6 +253,7 @@ class RunResult:
     validation: Optional[ValidationReport] = None
     summary: Optional[EngineeringSummary] = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
     output_dir: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -268,5 +269,6 @@ class RunResult:
             "validation": asdict(self.validation) if self.validation else None,
             "summary": asdict(self.summary) if self.summary else None,
             "events": self.events,
+            "metrics": self.metrics,
             "output_dir": self.output_dir,
         }

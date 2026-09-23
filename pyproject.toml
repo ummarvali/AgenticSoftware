@@ -13,10 +13,11 @@ authors = [{ name = "Agentic SDLC Prototype" }]
 dependencies = []
 
 [project.optional-dependencies]
-# The core prototype runs on the standard library only. `dev` adds the test runner
-# and (optionally) a real LLM backend so the same agents can call a live model.
+# The core prototype runs on the standard library only. `dev` adds the test runner;
+# `llm`/`anthropic` add a real model backend so the same agents can call a live model.
 dev = ["pytest>=7.4"]
 llm = ["openai>=1.0"]
+anthropic = ["anthropic>=0.39"]
 
 [project.scripts]
 agentic-sdlc = "agentic_sdlc.cli:main"

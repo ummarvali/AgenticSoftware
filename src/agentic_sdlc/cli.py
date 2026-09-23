@@ -40,9 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", help="Path to an existing repo (enables brownfield reasoning).")
     p.add_argument("--interactive", action="store_true",
                    help="Prompt for human approval at each checkpoint.")
-    p.add_argument("--provider", default="deterministic",
-                   choices=["deterministic", "openai"],
-                   help="Reasoning backend (default: deterministic/offline).")
+    p.add_argument("--provider", default="auto",
+                   choices=["auto", "deterministic", "anthropic", "claude", "llm", "openai"],
+                   help="Reasoning backend. 'auto' uses the LLM when a key/endpoint is "
+                        "configured (ANTHROPIC_API_KEY / OPENAI_API_KEY / "
+                        "AZURE_OPENAI_ENDPOINT / OPENAI_BASE_URL), else deterministic.")
     p.add_argument("--output-root", default="runs", help="Where run outputs are written.")
     p.add_argument("--inject-fault", action="append", metavar="CATEGORY[:N]",
                    help="Force a category to fail N times to demonstrate recovery.")
@@ -93,6 +95,10 @@ def _print_report(result) -> None:
     if result.validation:
         print(f"Validation     : {result.validation.summary} "
               f"({'PASS' if result.validation.passed else 'REVIEW NEEDED'})")
+    if result.metrics and result.metrics.get("calls"):
+        m = result.metrics
+        print(f"LLM usage      : {len(m['calls'])} calls, {m['total_tokens']} tokens, "
+              f"~${m['est_cost_usd']:.4f}, {m['fallbacks']} fallbacks")
     print(f"Run record     : {result.output_dir.replace('artifacts', 'result.json')}")
     summary_path = Path(result.output_dir) / "ENGINEERING_SUMMARY.md"
     if summary_path.exists():

@@ -46,7 +46,7 @@ class PipelineHalted(Exception):
 
 @dataclass
 class OrchestratorConfig:
-    provider: str = "deterministic"
+    provider: str = "auto"
     interactive: bool = False
     output_root: str = "runs"
     max_attempts: int = 2          # attempts per task before giving up
@@ -90,6 +90,7 @@ class Orchestrator:
         )
 
         result = RunResult(run_id=run_id, requirement=requirement, output_dir=str(output_dir))
+        self._say(f"[orchestrator] provider: {self.provider.name}")
         try:
             self._bootstrap(ctx)
             graph = self._plan(ctx)
@@ -109,6 +110,11 @@ class Orchestrator:
         result.validation = bb.validation
         result.summary = bb.summary
         result.events = bb.events
+        metrics = getattr(self.provider, "metrics", None)
+        if metrics is not None:
+            result.metrics = metrics.to_dict()
+            if metrics.calls:
+                self._say(f"[orchestrator] observability: {metrics.summary()}")
         self._persist(result)
         return result
 

@@ -126,5 +126,5 @@ design, impact ──► code ──► tests ──┐
 - **New domain:** add a `KnowledgePack` and register it in `DeterministicProvider._PACKS`.
 - **New capability/agent:** add an `Agent` and one entry in `agents.DAG_AGENTS`; add a task
   to the decomposer with the matching `category`.
-- **Live model:** set `--provider openai` (installs the `openai` extra); the analyst calls
-  the model, generation still uses the deterministic engine for completeness.
+- **Live model:** set `--provider claude` (or `openai`); the model drives analysis,
+  decomposition, and design, with per-stage deterministic fallback and usage metrics.

@@ -9,8 +9,9 @@ engineering summary, all under **controlled autonomy** (agents act, humans appro
 > persistence, and analytics."* — and it also handles greenfield, brownfield, and
 > ambiguous requirements generally.
 
-- **Runs offline, zero dependencies, zero API keys** — reproducible on any machine with
-  Python 3.10+. A live-LLM backend is an optional drop-in.
+- **LLM-first, never LLM-dependent** — the model (Claude / OpenAI / Azure) drives the
+  reasoning; the system degrades to a deterministic engine on any error, with retries,
+  timeouts, and token/cost/latency **observability**. The default needs no key.
 - **The system verifies its own output** — generated code is compiled and its tests are
   executed before a human is asked to accept the run.
 
@@ -37,21 +38,26 @@ see [§2](#2-quick-start-setup-instructions).
 
 ---
 
-## Design philosophy — dual-mode by design
+## Design philosophy — LLM-first, with a reliability fallback
 
 The reasoning layer is a swappable seam (`ReasoningProvider`), so the *same* agents and
-orchestration run on either brain:
+orchestration run on any brain:
 
-- **Deterministic engine (default)** — reproducible, gradable, runs anywhere with zero cost,
-  zero network, and zero API keys. Ideal for demoing and grading.
-- **LLM backend (`--provider openai`)** — real model reasoning for open-ended requirements;
-  the same pipeline, a different brain. In this prototype the LLM drives requirement
-  *analysis*, and generation falls back to the deterministic engine so every run stays
-  complete.
+- **LLM backend (Claude / OpenAI / Azure OpenAI / any OpenAI-compatible endpoint)** — the
+  model drives requirement **analysis, task decomposition, and architecture design**. It is
+  used automatically when a key is present (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `AZURE_OPENAI_ENDPOINT`, or `OPENAI_BASE_URL`) — no code change.
+- **Deterministic engine (default when no key, and the fallback for every LLM stage)** — a
+  reproducible rule engine that **backs each model call**: on a timeout, error, or malformed
+  response the pipeline degrades to it per-stage, so a run never half-completes.
 
-This is a deliberate architectural choice, not a limitation: a production agentic system must
-**degrade gracefully when the LLM is unavailable**, and the deterministic engine *is* that
-fallback layer.
+Every model call is wrapped with a **timeout, bounded retries, strict JSON validation**, and
+**per-stage fallback**, and every run reports **observability** — LLM calls, tokens, latency,
+estimated cost, and fallback count (printed and saved in `result.json`).
+
+This is the SRE stance made concrete: an agent that is **LLM-first but never LLM-dependent**.
+(Code/test/doc *generation* uses verified templates so the demoed URL shortener is guaranteed
+to compile and pass its tests — a deliberate reliability choice, stated plainly, not hidden.)
 
 ---
 
@@ -123,8 +129,17 @@ python -m unittest discover -s tests -v          # framework tests (no pytest ne
 python -m pip install -e ".[dev]"; pytest        # or with pytest
 ```
 
+**Run on a real model (Claude):**
+
+```powershell
+pip install -e ".[anthropic]"
+$env:ANTHROPIC_API_KEY = "sk-ant-..."   # from console.anthropic.com (NOT a claude.ai login)
+python -m agentic_sdlc --provider claude "Build a scalable URL shortener service with APIs, persistence, and analytics."
+# OpenAI/Azure instead: pip install -e ".[llm]"; set OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT); --provider openai
+```
+
 **CLI flags:** `--file <path>`, `--repo <path>` (brownfield scan), `--interactive`,
-`--provider deterministic|openai`, `--inject-fault <category[:N]>`, `--quiet`, `--json`.
+`--provider auto|deterministic|claude|openai`, `--inject-fault <category[:N]>`, `--quiet`, `--json`.
 
 Every run writes to `runs/<run-id>/`:
 `artifacts/` (the generated project) + `result.json` (full machine-readable record) +
@@ -277,9 +292,10 @@ agentic-sdlc-system/
 │  ├─ models.py                       Typed contracts shared by all stages (incl. TaskGraph DAG)
 │  ├─ llm/
 │  │  ├─ base.py                      ReasoningProvider interface (the swappable brain)
+│  │  ├─ client.py                    LLM clients (Claude/OpenAI/Azure) + usage metrics
+│  │  ├─ llm_provider.py              LLM-first provider: retries, JSON validation, fallback
 │  │  ├─ deterministic.py             Offline engine: classify, decompose, dispatch to packs
-│  │  ├─ openai_provider.py           Optional live-LLM backend (lazy import)
-│  │  └─ __init__.py                  get_provider() factory
+│  │  └─ __init__.py                  get_provider() factory (auto-selects the backend)
 │  ├─ knowledge/
 │  │  ├─ base.py                      KnowledgePack interface
 │  │  ├─ url_shortener.py             The mandatory use case: full generated service + tests
@@ -319,9 +335,10 @@ agentic-sdlc-system/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 21 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 25 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
-   and full orchestrator runs including **retry recovery**, **optional-task degradation**,
+   the **LLM provider** (mock-driven: JSON parsing, metrics, and per-stage fallback), and
+   full orchestrator runs including **retry recovery**, **optional-task degradation**,
    **required-task halt**, **human rejection**, and the **validation feedback loop**.
 2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
@@ -330,7 +347,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 21 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 25 tests ... OK
 ```
 
 ---
@@ -362,9 +379,9 @@ contract/doc presence → risk register → human acceptance gate.
 - The generated service favours the standard library and clarity over framework features.
 
 **Limitations:**
-- The **deterministic engine** covers known domains richly (URL shortener) and unknown
-  domains with a coherent generic scaffold; it is **not** a general code synthesizer. For
-  open-ended requirements, wire in `--provider openai` (the seam is already built).
+- The LLM drives **analysis, decomposition, and design**; **code/test/doc generation uses
+  verified templates** for guaranteed-runnable output (reliability over novelty). LLM-authored
+  code generation is a documented next step behind the same `ReasoningProvider` seam.
 - Human checkpoints are **console-based** in this prototype (no web UI).
 - The brownfield repo scan is a summarizing heuristic (candidate touch points), not a full
   static-analysis/impact engine.
@@ -387,6 +404,8 @@ contract/doc presence → risk register → human acceptance gate.
 | Validation & guardrails | `agents/validator.py`, `tools/*`, sandbox + timeout |
 | Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py` |
 | Final structured engineering summary | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |
+| LLM reasoning + reliability fallback | `llm/llm_provider.py`, `llm/client.py` |
+| Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested) |
 
 ---
@@ -397,7 +416,8 @@ contract/doc presence → risk register → human acceptance gate.
   `DeterministicProvider._PACKS`. No agent or orchestrator change required.
 - **New capability:** add an `Agent`, one entry in `agents.DAG_AGENTS`, and a task in the
   decomposer with the matching `category`.
-- **Live LLM:** `pip install -e ".[llm]"`, set `OPENAI_API_KEY`, run with `--provider openai`.
+- **Live LLM:** `pip install -e ".[anthropic]"` (or `".[llm]"`), set `ANTHROPIC_API_KEY`
+  (or `OPENAI_API_KEY` / Azure vars), run with `--provider claude` (or `openai`).
 
 ---
 

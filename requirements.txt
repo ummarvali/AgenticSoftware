@@ -10,3 +10,4 @@
 # Install with a live LLM backend: python -m pip install -e ".[llm]"
 pytest>=7.4        ; extra == "dev"
 openai>=1.0        ; extra == "llm"
+anthropic>=0.39    ; extra == "anthropic"
