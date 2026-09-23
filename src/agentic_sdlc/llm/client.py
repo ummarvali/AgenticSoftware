@@ -196,19 +196,16 @@ class AnthropicClient:
 
     def complete(self, system: str, user: str, *, json_mode: bool = True,
                  timeout: float = 30.0) -> LLMResponse:  # pragma: no cover - network
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         if json_mode:
-            messages.append({"role": "assistant", "content": "{"})  # prefill to force JSON
+            system = system + "\n\nReturn ONLY a valid JSON object: no prose, no markdown fences."
         resp = self._client.messages.create(
             model=self.model,
-            max_tokens=2048,
+            max_tokens=4096,
             system=system,
-            messages=messages,
+            messages=[{"role": "user", "content": user}],
             timeout=timeout,
         )
         text = resp.content[0].text if resp.content else ""
-        if json_mode:
-            text = "{" + text
         usage = getattr(resp, "usage", None)
         return LLMResponse(
             text=text,

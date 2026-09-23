@@ -40,6 +40,23 @@ _KNOWN_CATEGORIES = {
 }
 
 
+def _coerce_json(text: str) -> dict:
+    """Parse JSON from a model reply, tolerating code fences or surrounding prose."""
+    s = text.strip()
+    if s.startswith("```"):
+        parts = s.split("```")
+        s = parts[1] if len(parts) >= 2 else s
+        if s.lstrip().lower().startswith("json"):
+            s = s.lstrip()[4:]
+    try:
+        return json.loads(s)
+    except Exception:
+        start, end = s.find("{"), s.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(s[start:end + 1])
+        raise
+
+
 class LLMProvider(ReasoningProvider):
     """Model-driven reasoning; deterministic fallback for reliability."""
 
@@ -77,7 +94,7 @@ class LLMProvider(ReasoningProvider):
             try:
                 resp = self._client.complete(system, user, json_mode=True,
                                              timeout=self._timeout)
-                data = json.loads(resp.text)
+                data = _coerce_json(resp.text)
                 self.metrics.record(CallRecord(
                     stage, resp.model, resp.prompt_tokens, resp.completion_tokens,
                     round(time.time() - start, 3),
