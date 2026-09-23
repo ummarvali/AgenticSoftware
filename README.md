@@ -1,5 +1,7 @@
 # Agentic SDLC — Requirement → Reviewable Engineering Outcome
 
+[![CI](https://github.com/ummarvali/AgenticSoftware/actions/workflows/ci.yml/badge.svg)](https://github.com/ummarvali/AgenticSoftware/actions/workflows/ci.yml)
+
 An **agentic software-engineering system** that takes a plain-language requirement and
 drives it across the SDLC — understand → decompose → orchestrate → generate → **validate** —
 producing production-shaped code, an API contract, tests, docs, and a structured
@@ -32,9 +34,50 @@ curl http://127.0.0.1:8000/api/stats/<code>   # click analytics
 python -m unittest discover -s tests -v   # 20 tests, all pass
 ```
 
+Or as a container (no Python needed on the host):
+
+```bash
+docker build -t url-shortener demo
+docker run --rm -p 8000:8000 url-shortener
+# durable store: -e SHORTENER_STORE=sqlite -e SHORTENER_DB_PATH=/data/s.db -v "$PWD/data:/data"
+```
+
 `demo/` is the **exact output the agent generated** for the mandatory requirement — checked
 in so a reviewer can run the app immediately. To watch the agent *produce* it from scratch,
 see [§2](#2-quick-start-setup-instructions).
+
+
+---
+
+## How I approached this — candidate notes
+
+> Written in the first person, because the brief asks for the candidate's approach.
+
+1. **I read the brief as an SRE problem, not a chatbot problem.** "Controlled autonomy" and
+   "validation and risk control" are reliability requirements. So the first design decision
+   was: the system must *verify its own output* (compile + run the tests it wrote) before a
+   human is ever asked to approve, and it must *never half-complete* — every failure path
+   retries, degrades, or halts cleanly with the partial record saved.
+2. **I separated the brain from the workflow.** Agents contain no domain knowledge; they
+   call a swappable `ReasoningProvider`. That let me build and test the orchestration
+   (DAG, gates, retry, repair loop) fully offline and deterministically, then plug in a
+   real model (Claude / OpenAI / Azure / any OpenAI-compatible endpoint) without touching
+   an agent. The offline engine is not a stand-in for the model — it is the model's
+   **fallback**, per stage, which is how I would want a production agent to behave.
+3. **I chose a blackboard over agent-to-agent calls.** With one shared state and one event
+   log, a run is auditable end to end (every agent decision is logged with its rationale),
+   each agent is unit-testable alone, and adding a concurrent executor for independent
+   tasks needed only a lock on the log.
+4. **I made the URL shortener boring on purpose.** Standard library only, base62 ids,
+   in-memory + SQLite stores, a WSGI adapter, an OpenAPI contract, unit + integration
+   tests, a container image. The interesting engineering is in the agent system; the
+   deliverable had to be something a reviewer can run in ten seconds.
+5. **I wrote down what I did not do.** Predictable sequential codes, synchronous click
+   recording, a heuristic brownfield scan, console-only approval gates — see §8–§9. In a
+   prototype the trade-offs matter more than the feature count.
+
+I used AI coding assistants as pair-programmers during implementation; the architecture,
+the reliability stance above, and the review of every module are mine.
 
 ---
 
@@ -109,11 +152,21 @@ the core system.
 python scripts/demo.py            # add --provider claude to run on a live model
 ```
 
-Or drive it yourself:
+Or drive it yourself — **Linux / macOS / WSL**:
+
+```bash
+cd AgenticSoftware
+export PYTHONPATH=src
+python3 -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
+python3 -m unittest discover -s tests -v          # 28 framework tests
+python3 -m agentic_sdlc --interactive --file examples/greenfield.txt   # human approves each gate
+```
+
+**Windows PowerShell**:
 
 ```powershell
 # From the project root
-cd agentic-sdlc-system
+cd AgenticSoftware
 
 # Option A — run directly (no install), just put src on the path:
 $env:PYTHONPATH = "src"
@@ -150,8 +203,29 @@ python -m agentic_sdlc --provider claude "Build a scalable URL shortener service
 # OpenAI/Azure instead: pip install -e ".[llm]"; set OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT); --provider openai
 ```
 
+**Run on a free model (Gemini, via its OpenAI-compatible endpoint):**
+
+```bash
+pip install -e ".[llm]"
+export OPENAI_API_KEY="<your Google AI Studio key>"        # free tier: aistudio.google.com
+export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export OPENAI_MODEL="gemini-2.0-flash"
+python3 -m agentic_sdlc --provider openai --file examples/greenfield.txt
+```
+
+Spend is capped per run: `AGENTIC_LLM_MAX_CALLS` (default 40) and `AGENTIC_LLM_MAX_COST_USD`
+(default 1.00); past the cap, remaining stages degrade to the deterministic engine.
+
+Keys are read **only** from the environment and are never written to disk or to
+`result.json`. A recorded live-model run is checked in under
+[`examples/llm-run/`](examples/llm-run/) so the model-driven path can be inspected without a
+key — `result.json` there carries the real per-stage tokens, latency, cost and fallback
+counts. To refresh it after your own run: `python scripts/snapshot_run.py --name llm-run`
+(copies the latest run and scrubs anything key-shaped).
+
 **CLI flags:** `--file <path>`, `--repo <path>` (brownfield scan), `--interactive`,
-`--provider auto|deterministic|claude|openai`, `--inject-fault <category[:N]>`, `--quiet`, `--json`.
+`--provider auto|deterministic|claude|openai`, `--inject-fault <category[:N]>`, `--sequential`
+(disable in-level concurrency), `--quiet`, `--json`.
 
 Every run writes to `runs/<run-id>/`:
 `artifacts/` (the generated project) + `result.json` (full machine-readable record) +
@@ -169,7 +243,7 @@ $ python -m agentic_sdlc "Build a scalable URL shortener service with APIs, pers
 
 [orchestrator] --- level 0: design ---
 [Architect] designed 5 components, 4 API endpoints
-[orchestrator] --- level 1: code, docs ---        <- independent work in one level
+[orchestrator] --- level 1: code, docs (parallel) ---   <- independent work, run concurrently
 [CodeGenerator] generated 9 files
 [DocGenerator] generated 2 documentation files
 [orchestrator] --- level 2: tests ---
@@ -245,8 +319,14 @@ run's reasoning is auditable end to end.
   (greenfield / brownfield / ambiguous), normalizes it, and turns each ambiguity into an
   explicit default assumption. → **human clarification gate**.
 - **Plan** — `TaskDecomposer` builds a **task DAG**; a topological sort groups it into
-  dependency *levels* (so `code` and `docs` share a level — real parallelism, not a flat
-  list). → **human plan gate**.
+  dependency *levels*; tasks in one level have no mutual dependency, so the executor
+  runs them **concurrently** (a thread per task, `--sequential` to disable). Level N+1
+  never starts before level N completes — the ordering the graph guarantees. → **human
+  plan gate**.
+- **Idempotent agents** — a live model may plan many tasks of one category
+  (`code-storage-layer`, `code-cache-layer`, …). Each agent *perceives* whether the work
+  already exists and *decides* to **reuse** it (logged as a decision, counted as
+  `reused=N`), so a rich plan never causes duplicate designs or duplicate artifacts.
 - **Execute** — the orchestrator walks the levels and dispatches each task to the agent
   registered for its `category`, all coordinating through the `Blackboard`. Each task is
   wrapped in **retry-with-backoff**; persistent failures **degrade** optional tasks or
@@ -282,7 +362,7 @@ Highlights:
 ## 6. Project layout — what every file does
 
 ```
-agentic-sdlc-system/
+AgenticSoftware/
 ├─ pyproject.toml                     Package metadata, entry point, pytest config
 ├─ requirements.txt                   Optional extras only (dev=pytest, llm=openai)
 ├─ .gitignore                         Excludes caches, venvs, and generated runs/
@@ -292,13 +372,17 @@ agentic-sdlc-system/
 │  ├─ url_shortener/                  service package (base62, store, service, api, server)
 │  ├─ tests/                          unit + integration tests (20, all pass)
 │  ├─ openapi.yaml                    API contract
+│  ├─ Dockerfile / .dockerignore      container image (non-root, healthcheck)
 │  └─ README.md / docs/ / ENGINEERING_SUMMARY.md
 ├─ docs/ARCHITECTURE.md               Diagrams, control flow, design decisions
 ├─ examples/                          Three requirement inputs + expected outputs
 │  ├─ greenfield.txt / brownfield.txt / ambiguous.txt
+│  ├─ llm-run/                        ★ Recorded live-model run (result.json + artifacts)
 │  └─ README.md
 ├─ scripts/
-│  └─ demo.py                          One-command narrated demo (all scenarios + monitoring)
+│  ├─ demo.py                          One-command narrated demo (all scenarios + monitoring)
+│  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
+├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
 ├─ src/agentic_sdlc/
 │  ├─ __init__.py                     Public API (run_pipeline, models)
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
@@ -349,12 +433,15 @@ agentic-sdlc-system/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 28 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 39 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
    **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
    full orchestrator runs including **retry recovery**, **optional-task degradation**,
-   **required-task halt**, **human rejection**, and the **validation feedback loop**.
+   **required-task halt**, **human rejection**, the **validation feedback loop**, and
+   **concurrent level execution** (parallel ≡ sequential output; sibling completes before a halt),
+   **idempotent agents under a fine-grained plan** (one design, 15 unique artifacts, all 14
+   tasks complete), the **LLM spend budget**, and **secret scrubbing** for generated code.
 2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
    (shorten → 302 redirect → stats).
@@ -362,8 +449,13 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 28 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 39 tests ... OK
 ```
+
+4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
+   and demo suites on Linux and Windows (Python 3.10 and 3.12), executes the mandatory
+   use case and every recovery scenario end to end, and builds + smoke-tests the demo
+   container (shorten → 302 → stats).
 
 ---
 
@@ -384,6 +476,54 @@ $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 28
 
 The validation *strategy* is layered: static (compile) → dynamic (execute tests) →
 contract/doc presence → risk register → human acceptance gate.
+
+### Fault tolerance — what is enforced
+
+| Failure | Behaviour | Where |
+| --- | --- | --- |
+| Model call errors / times out / returns bad JSON / is truncated at `max_tokens` | bounded retries, then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm` | `llm_provider._ask_json`, `_with_fallback` |
+| Model-authored code fails to compile or its tests fail | rejected in a throwaway sandbox; verified template used instead; recorded as a `codegen` fallback | `llm_provider._ensure_bundle` |
+| Model plan is invalid (unknown category, cycle, empty) | rejected; deterministic plan used | `decompose` guardrail, `TaskGraph.validate_acyclic` |
+| Model plan is fine-grained (many `code`/`design` tasks) | agents **perceive** existing work and **decide to reuse** it — one design, one bundle, no duplicate artifacts; every task still completes | `Architect/CodeGenerator/... .decide`, `Blackboard.merge` |
+| An agent task raises | retry with backoff → optional task **degrades** (logged, skipped) / required task **halts** cleanly with the partial run saved | `orchestrator._run_task` |
+| A task fails inside a parallel level | siblings run to completion, then the level halts once | `orchestrator._execute` |
+| Generated tests hang | subprocess hard timeout | `CodeRunner.run_unittests` |
+| Validation finds a repairable gap | Repair agent fixes it, re-validation runs (bounded iterations) | `orchestrator._repair_loop` |
+| LLM spend runs away | call and cost **budget** (`AGENTIC_LLM_MAX_CALLS`, default 40; `AGENTIC_LLM_MAX_COST_USD`, default 1.00) — once spent, remaining stages degrade to deterministic instead of calling the model | `llm_provider._budget_check` |
+
+Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
+`--inject-fault code:9` (halt), `examples/ambiguous.txt` (repair loop).
+
+### Security — what is enforced, and what is not
+
+Enforced:
+
+- **Secrets** are read only from environment variables, never written to disk, logs,
+  `result.json`, or run snapshots (`scripts/snapshot_run.py` scrubs key-shaped strings
+  defensively). `.gitignore` excludes `.env`, `*.key`, `secrets.*`.
+- **Generated and model-authored code never sees credentials**: the test subprocess runs
+  with every `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*CREDENTIAL*` variable
+  removed from its environment (`CodeRunner.scrubbed_env`).
+- **Artifact writes are confined** to the run's sandbox directory; any path that resolves
+  outside it (e.g. `../../etc/passwd`, absolute paths) is rejected (`ArtifactStore`).
+- **Untrusted model output is treated as data**: strict JSON parsing, schema-shaped
+  validation, an allow-list of task categories, and the compile+test gate before any
+  model-authored code is accepted. Prompt-injected instructions in a requirement can at
+  most produce a plan or code that the guardrails above reject.
+- **Bounded execution**: per-call timeouts, bounded retries, bounded repair iterations,
+  bounded spend.
+- **Human approval gates** at clarification, plan, and acceptance; a rejection halts.
+- **Container**: the demo image runs as a non-root user with a health check.
+
+Not enforced in this prototype (documented, would be required for production):
+
+- The validation sandbox is a temp directory + subprocess with a timeout and a scrubbed
+  environment — **not** a network-isolated container. Model-authored tests can still
+  reach the network and the host filesystem within the process's permissions. In
+  production this step runs in an ephemeral, no-network container (gVisor/Firecracker).
+- The URL shortener is an **open redirect by design** (any `http(s)` target), has **no
+  authentication or rate limiting**, and uses **predictable sequential codes**; each is
+  listed in the risk register the validator emits.
 
 ---
 
@@ -420,10 +560,16 @@ contract/doc presence → risk register → human acceptance gate.
 | Code / API contract / tests / docs | LLM-authored + sandbox-gated (`llm/llm_provider.py`); verified template (`knowledge/url_shortener.py`) |
 | Validation & guardrails | `agents/validator.py`, `tools/*`, sandbox + timeout |
 | Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py` |
-| Final structured engineering summary | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |
+| Final structured engineering summary (plan as executed, rationale + decision log, artifacts, **validation approach + per-check results**, run monitoring, risks, trade-offs, assumptions, limitations) | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |
 | LLM reasoning + reliability fallback | `llm/llm_provider.py`, `llm/client.py` |
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
-| Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested) |
+| Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
+| Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
+| Evidence of the model-driven path | `examples/llm-run/result.json` (tokens, latency, cost, per-stage fallbacks) |
+| Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
+| Spend guardrail | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
+| Secret isolation for generated code | `tools/code_runner.scrubbed_env` |
+| Idempotent agents (no duplicate work under rich plans) | `agents/*.decide` → `reuse`; `Blackboard.merge` |
 
 ---
 

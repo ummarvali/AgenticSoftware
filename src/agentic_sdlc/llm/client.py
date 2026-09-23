@@ -12,6 +12,7 @@ observability an SRE needs to reason about a run's reliability and spend.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Protocol
@@ -29,7 +30,7 @@ class LLMClient(Protocol):
     """Minimal chat interface every backend (real or fake) implements."""
 
     def complete(self, system: str, user: str, *, json_mode: bool = True,
-                 timeout: float = 30.0) -> LLMResponse: ...
+                 timeout: float = 30.0, max_tokens: int = 4096) -> LLMResponse: ...
 
 
 # Approximate USD price per 1M tokens (input, output). Only used for a cost estimate;
@@ -72,8 +73,13 @@ class MetricsCollector:
     """Aggregates per-call LLM usage for observability."""
 
     calls: list[CallRecord] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def record(self, rec: CallRecord) -> None:
+        with self._lock:
+            self._record_locked(rec)
+
+    def _record_locked(self, rec: CallRecord) -> None:
         self.calls.append(rec)
 
     @property
@@ -141,9 +147,10 @@ class OpenAIClient:
             ) from exc
 
     def complete(self, system: str, user: str, *, json_mode: bool = True,
-                 timeout: float = 30.0) -> LLMResponse:  # pragma: no cover - network
+                 timeout: float = 30.0, max_tokens: int = 4096) -> LLMResponse:  # pragma: no cover - network
         kwargs: dict[str, Any] = {
             "model": self.model,
+            "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -155,6 +162,8 @@ class OpenAIClient:
             kwargs["response_format"] = {"type": "json_object"}
         resp = self._client.chat.completions.create(**kwargs)
         usage = getattr(resp, "usage", None)
+        if getattr(resp.choices[0], "finish_reason", "") == "length":
+            raise RuntimeError(f"model output truncated at max_tokens={max_tokens}")
         return LLMResponse(
             text=resp.choices[0].message.content or "",
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
@@ -195,21 +204,23 @@ class AnthropicClient:
         return ids[0] if ids else "claude-3-5-sonnet-20241022"
 
     def complete(self, system: str, user: str, *, json_mode: bool = True,
-                 timeout: float = 30.0) -> LLMResponse:  # pragma: no cover - network
+                 timeout: float = 30.0, max_tokens: int = 4096) -> LLMResponse:  # pragma: no cover - network
         if json_mode:
             system = system + "\n\nReturn ONLY a valid JSON object: no prose, no markdown fences."
         resp = self._client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
             timeout=timeout,
         )
-        text = ""
-        for block in resp.content or []:
-            if hasattr(block, "text"):  # skip thinking/other non-text blocks
-                text = block.text
-                break
+        # Concatenate every text block (thinking blocks have no .text and are skipped).
+        text = "".join(getattr(b, "text", "") or "" for b in (resp.content or []))
+        if getattr(resp, "stop_reason", "") == "max_tokens":
+            raise RuntimeError(f"model output truncated at max_tokens={max_tokens} "
+                               f"(got {len(text)} chars)")
+        if not text.strip():
+            raise RuntimeError(f"model returned no text (stop_reason={getattr(resp, 'stop_reason', '?')})")
         usage = getattr(resp, "usage", None)
         return LLMResponse(
             text=text,

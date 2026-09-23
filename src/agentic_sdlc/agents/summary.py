@@ -29,42 +29,103 @@ class SummaryAgent(Agent):
         # Idempotent across repair re-runs: drop any prior summary before rewriting.
         bb.docs[:] = [d for d in bb.docs if d.path != "ENGINEERING_SUMMARY.md"]
 
+        reused = {e.get("task") for e in bb.events if e["kind"] == "skip" and e.get("task")}
+        plan = self._plan_as_executed(bb, reused)
+        provider = ctx.provider.name
+        llm_metrics = getattr(ctx.provider, "metrics", None)
+
         summary = EngineeringSummary(
             requirement=bb.requirement.text,
             kind=bb.analysis.kind.value,
-            implementation_plan=[
-                "Analyze & normalize the requirement",
-                "Design the architecture and API contract",
-                *(["Assess brownfield codebase impact"] if bb.impact else []),
-                "Generate implementation",
-                "Generate unit + integration tests",
-                "Generate documentation",
-                "Validate (compile, test, contract, docs)",
-                "Summarize for human review",
-            ],
-            rationale=list(bb.architecture.decisions) if bb.architecture else [],
+            implementation_plan=plan,
+            rationale=(list(bb.architecture.decisions) if bb.architecture else [])
+                      + [e["message"] for e in bb.events if e["kind"] == "decision"],
             artifacts=[a.path for a in bb.all_artifacts()],
             risks=list(bb.validation.risks) if bb.validation else [],
             tradeoffs=list(bb.architecture.tradeoffs) if bb.architecture else [],
             validation=bb.validation.summary if bb.validation else "not run",
+            validation_approach=[
+                "Static: every generated .py file is compiled (py_compile).",
+                "Dynamic: the generated unit + integration suite is executed in a "
+                "subprocess with a timeout and a credential-scrubbed environment.",
+                "Contract: an OpenAPI document must exist whenever the design exposes an API.",
+                "Documentation: README/architecture docs must be present.",
+                "Feedback loop: repairable findings are fixed by the Repair agent and "
+                "re-validated (bounded); compile failures halt for human attention.",
+                "Human: a final acceptance gate reviews this report before the run is accepted.",
+            ] + (["Model output: LLM-authored code was accepted only after passing a "
+                  "sandbox compile+test gate; otherwise the verified template was used."]
+                 if provider == "llm" else []),
+            validation_checks=[{"name": c.name, "passed": c.passed, "detail": c.detail}
+                               for c in (bb.validation.checks if bb.validation else [])],
+            monitoring=self._monitoring(bb, provider, llm_metrics),
             assumptions=list(bb.assumptions),
-            limitations=[
-                "Offline deterministic engine covers known domains richly and unknown "
-                "domains with a generic scaffold; it is not a general code synthesizer.",
-                "Generated service targets clarity and the standard library over "
-                "framework features (e.g. no async, no ORM).",
-                "Human checkpoints are console-based in this prototype.",
-            ],
+            limitations=self._limitations(provider, llm_metrics),
         )
         bb.summary = summary
 
         # Also persist a human-readable Markdown summary as a first-class artifact.
         md = self._render(summary, bb)
         artifact = Artifact("ENGINEERING_SUMMARY.md", md, "docs")
-        bb.docs.append(artifact)
+        bb.merge(bb.docs, [artifact])
         ctx.tools.artifacts.write(artifact)
         bb.log("summary", "engineering summary written")
         ctx.emit(self.name, "engineering summary written")
+
+
+    @staticmethod
+    def _plan_as_executed(bb, reused: set) -> list[str]:
+        """The approved DAG, level by level, marking which tasks executed vs reused."""
+
+        if not bb.task_graph:
+            return ["(no plan recorded)"]
+        lines = []
+        for i, level in enumerate(bb.task_graph.topological_levels()):
+            items = ", ".join(
+                f"{t.id} ({t.category}{', reused' if t.id in reused else ''})" for t in level
+            )
+            lines.append(f"Level {i}: {items}")
+        return lines
+
+    @staticmethod
+    def _monitoring(bb, provider: str, llm) -> dict:
+        def count(kind):
+            return sum(1 for e in bb.events if e["kind"] == kind)
+        m = {
+            "provider": provider,
+            "tasks_completed": count("task"),
+            "retries": count("task_error"),
+            "repairs": count("repair"),
+            "degradations": count("degrade"),
+            "parallel_levels": count("parallel"),
+            "reused_tasks": count("skip"),
+            "human_gates_passed_before_summary": count("gate"),
+        }
+        if llm is not None and llm.calls:
+            m["llm_calls"] = len(llm.calls)
+            m["llm_tokens"] = llm.total_tokens
+            m["llm_est_cost_usd"] = round(llm.est_cost_usd, 4)
+            m["llm_fallbacks"] = [f"{c.stage}: {c.error}" for c in llm.calls if c.fallback]
+        return m
+
+    @staticmethod
+    def _limitations(provider: str, llm) -> list[str]:
+        common = [
+            "Generated service targets clarity and the standard library over "
+            "framework features (e.g. no async, no ORM).",
+            "Human checkpoints are console-based in this prototype.",
+            "The validation sandbox is a subprocess with a timeout and scrubbed "
+            "environment, not a network-isolated container.",
+        ]
+        if provider == "llm":
+            fb = [c for c in (llm.calls if llm else []) if c.fallback]
+            note = ("Reasoning and code authoring were model-driven; "
+                    + (f"{len(fb)} stage(s) fell back to the deterministic engine "
+                       f"({', '.join(c.stage for c in fb)})." if fb
+                       else "no stage needed the deterministic fallback."))
+            return [note] + common
+        return ["Offline deterministic engine covers known domains richly and unknown "
+                "domains with a generic scaffold; it is not a general code synthesizer."] + common
 
     @staticmethod
     def _render(s: EngineeringSummary, bb) -> str:
@@ -81,6 +142,12 @@ class SummaryAgent(Agent):
                         "| Method | Path | Summary | Status |\n"
                         "| --- | --- | --- | --- |\n" + api_rows)
 
+        checks = "\n".join(
+            f"| {c['name']} | {'PASS' if c['passed'] else 'FAIL'} | "
+            f"{str(c['detail']).replace(chr(10), ' ').replace('|', '/')[:160]} |"
+            for c in s.validation_checks
+        ) or "| (none) | - | - |"
+
         impact = ""
         if bb.impact:
             impact = "\n\n## Codebase Impact (brownfield)\n\n" + bullets(bb.impact)
@@ -94,12 +161,26 @@ class SummaryAgent(Agent):
 ## Implementation Plan
 {bullets(s.implementation_plan)}
 
-## Rationale (key decisions)
+## Rationale (key decisions & agent decision log)
 {bullets(s.rationale)}
 {api_rows}{impact}
 
 ## Generated Artifacts
 {bullets(s.artifacts)}
+
+## Validation
+
+**Result:** {s.validation}
+
+| Check | Result | Detail |
+| --- | --- | --- |
+{checks}
+
+Approach:
+{bullets(s.validation_approach)}
+
+## Run Monitoring
+{bullets(f"{k}: {v}" for k, v in s.monitoring.items())}
 
 ## Risks
 {bullets(s.risks)}

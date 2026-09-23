@@ -1,0 +1,40 @@
+openapi: 3.0.3
+info:
+  title: Generated API
+  version: 1.0.0
+paths:
+  /api/v1/urls:
+    post:
+      summary: Create a new shortened URL (optionally with custom alias, expiration)
+      responses:
+        "201": { description: OK }
+  /{short_code}:
+    get:
+      summary: Redirect to the original long URL; asynchronously emits click event
+      responses:
+        "302": { description: OK }
+  /api/v1/urls/{short_code}:
+    get:
+      summary: Retrieve metadata for a short URL without redirecting
+      responses:
+        "200": { description: OK }
+  /api/v1/urls/{short_code}:
+    put:
+      summary: Update destination URL, expiration, or active status of an existing short URL
+      responses:
+        "200": { description: OK }
+  /api/v1/urls/{short_code}:
+    delete:
+      summary: Deactivate/delete a short URL (soft delete recommended)
+      responses:
+        "200": { description: OK }
+  /api/v1/urls/{short_code}/analytics:
+    get:
+      summary: Fetch aggregated click analytics for a short URL over a time range
+      responses:
+        "200": { description: OK }
+  /api/v1/health:
+    get:
+      summary: Service health/readiness check
+      responses:
+        "200": { description: OK }

@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile everything
+        run: python -m compileall -q src tests demo scripts
+
+      - name: Framework tests (agents, DAG, orchestrator, LLM provider mocks)
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+
+      - name: Demo URL-shortener tests
+        working-directory: demo
+        run: python -m unittest discover -s tests -v
+
+      - name: End-to-end — mandatory use case must validate 4/4
+        env:
+          PYTHONPATH: src
+        run: python -m agentic_sdlc --quiet --file examples/greenfield.txt
+
+      - name: End-to-end — recovery paths (retry, degrade, ambiguous → repair)
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m agentic_sdlc --quiet --inject-fault code:1 --file examples/greenfield.txt
+          python -m agentic_sdlc --quiet --inject-fault docs:9 --file examples/greenfield.txt
+          python -m agentic_sdlc --quiet --file examples/ambiguous.txt
+          python -m agentic_sdlc --quiet --file examples/brownfield.txt --repo demo
+
+  docker:
+    name: demo image builds and serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t url-shortener:ci demo
+      - name: Smoke test the container
+        run: |
+          docker run -d --rm -p 8000:8000 --name us url-shortener:ci
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/healthz && break; sleep 0.5; done
+          code=$(curl -fs -X POST http://127.0.0.1:8000/api/shorten -H 'Content-Type: application/json' \
+                 -d '{"url":"https://example.com/long"}' | python -c 'import sys,json;print(json.load(sys.stdin)["code"])')
+          curl -fs -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8000/$code" | grep -q 302
+          curl -fs "http://127.0.0.1:8000/api/stats/$code" | grep -q '"clicks": 1'
+          docker stop us

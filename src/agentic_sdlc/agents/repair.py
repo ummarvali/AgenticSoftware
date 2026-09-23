@@ -56,7 +56,7 @@ class RepairAgent(Agent):
                    "info:\n  title: Generated API\n  version: 1.0.0\n"
                    "paths:\n" + paths + "\n")
         artifact = Artifact("openapi.yaml", content, "contract")
-        bb.code.append(artifact)
+        bb.merge(bb.code, [artifact])
         ctx.tools.artifacts.write(artifact)
 
     def _add_readme(self, ctx: AgentContext) -> None:
@@ -64,7 +64,7 @@ class RepairAgent(Agent):
         overview = bb.architecture.overview if bb.architecture else ""
         content = f"# Generated Service\n\n{overview}\n\n## Tests\n\n`python -m unittest discover -s tests`\n"
         artifact = Artifact("README.md", content, "docs")
-        bb.docs.append(artifact)
+        bb.merge(bb.docs, [artifact])
         ctx.tools.artifacts.write(artifact)
 
     _HANDLERS = {

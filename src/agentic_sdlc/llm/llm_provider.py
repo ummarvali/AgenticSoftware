@@ -17,6 +17,9 @@ breaks), and it is documented as such — not a hidden limitation.
 from __future__ import annotations
 
 import json
+import os
+import re
+import threading
 import time
 from typing import Any, Callable
 
@@ -40,6 +43,21 @@ _KNOWN_CATEGORIES = {
 }
 
 
+def _to_int(value, default: int) -> int:
+    """Lenient integer parsing for model output: 201, "201", "201 Created", "201/400" -> 201."""
+
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return int(value)
+    m = re.search(r"\d+", str(value or ""))
+    return int(m.group()) if m else default
+
+
+# Output budget per stage. Reasoning stages are small; authoring a whole project is not.
+_MAX_TOKENS = {"analyze": 4096, "decompose": 4096, "design": 4096, "codegen": 32000}
+
+
 def _coerce_json(text: str) -> dict:
     """Parse JSON from a model reply, tolerating code fences or surrounding prose."""
     s = text.strip()
@@ -57,6 +75,10 @@ def _coerce_json(text: str) -> dict:
         raise
 
 
+class BudgetExceeded(RuntimeError):
+    """Raised before a model call when the run's call/cost budget is spent."""
+
+
 class LLMProvider(ReasoningProvider):
     """Model-driven reasoning; deterministic fallback for reliability."""
 
@@ -72,6 +94,8 @@ class LLMProvider(ReasoningProvider):
         enable_codegen: bool = True,
         metrics: MetricsCollector | None = None,
         fallback: ReasoningProvider | None = None,
+        max_calls: int | None = None,
+        max_cost_usd: float | None = None,
     ) -> None:
         self._client = client
         self._timeout = timeout
@@ -84,17 +108,41 @@ class LLMProvider(ReasoningProvider):
         self._fallback = fallback or DeterministicProvider()
         self._bundle: dict[str, list[Artifact]] | None = None
         self._bundle_failed = False
+        # Spend guardrail: once either budget is exhausted, every further stage
+        # degrades to the deterministic engine instead of calling the model. A
+        # runaway plan can therefore cost at most the budget, never more.
+        self._max_calls = max_calls if max_calls is not None else int(
+            os.environ.get("AGENTIC_LLM_MAX_CALLS", "40"))
+        self._max_cost_usd = max_cost_usd if max_cost_usd is not None else float(
+            os.environ.get("AGENTIC_LLM_MAX_COST_USD", "1.00"))
+        # code/docs generators may run concurrently in one DAG level; the model must
+        # author the project exactly once, so the bundle is built under a lock.
+        self._bundle_lock = threading.Lock()
 
     # -- LLM call with retries + metrics ---------------------------------- #
 
+    def _budget_check(self, stage: str) -> None:
+        calls = len(self.metrics.calls)
+        cost = self.metrics.est_cost_usd
+        if calls >= self._max_calls:
+            raise BudgetExceeded(f"{stage}: LLM call budget exhausted ({calls}/{self._max_calls})")
+        if cost >= self._max_cost_usd:
+            raise BudgetExceeded(f"{stage}: LLM cost budget exhausted (~${cost:.4f} >= ${self._max_cost_usd:.2f})")
+
     def _ask_json(self, stage: str, system: str, user: str) -> dict[str, Any]:
+        self._budget_check(stage)
         last_error: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
             start = time.time()
             try:
                 resp = self._client.complete(system, user, json_mode=True,
-                                             timeout=self._timeout)
-                data = _coerce_json(resp.text)
+                                             timeout=self._timeout,
+                                             max_tokens=_MAX_TOKENS.get(stage, 4096))
+                try:
+                    data = _coerce_json(resp.text)
+                except Exception as exc:
+                    head = (resp.text or "").strip().replace("\n", " ")[:80]
+                    raise ValueError(f"non-JSON reply ({exc}); starts with: {head!r}") from exc
                 self.metrics.record(CallRecord(
                     stage, resp.model, resp.prompt_tokens, resp.completion_tokens,
                     round(time.time() - start, 3),
@@ -175,7 +223,7 @@ class LLMProvider(ReasoningProvider):
                 description=t.get("description", ""),
                 depends_on=[str(d) for d in t.get("depends_on", [])],
                 category=t.get("category", "generic"),
-                priority=int(t.get("priority", 100)),
+                priority=_to_int(t.get("priority", 100), 100),
             ) for t in data.get("tasks", [])]
             graph = TaskGraph(tasks=tasks)
             # Validation guardrail: reject unknown categories or a cyclic/empty plan.
@@ -194,7 +242,8 @@ class LLMProvider(ReasoningProvider):
                 "Design the architecture. Respond with STRICT JSON only: {overview, "
                 "components (string[]), data_model (string[]), api (array of {method, "
                 "path, summary, request, response, status}), decisions (string[]), "
-                "tradeoffs (string[])}."
+                "tradeoffs (string[])}. 'status' is a single integer HTTP status for the "
+                "success case (e.g. 201); 'method' is one verb."
             )
             data = self._ask_json("design", system, analysis.normalized_problem or analysis.intent)
             arch = Architecture(
@@ -207,7 +256,7 @@ class LLMProvider(ReasoningProvider):
                     summary=e.get("summary", ""),
                     request=e.get("request"),
                     response=e.get("response", ""),
-                    status=int(e.get("status", 200)),
+                    status=_to_int(e.get("status", 200), 200),
                 ) for e in data.get("api", [])],
                 decisions=list(data.get("decisions", [])),
                 tradeoffs=list(data.get("tradeoffs", [])),
@@ -252,6 +301,10 @@ class LLMProvider(ReasoningProvider):
         generated tests pass in a throwaway sandbox; otherwise we fall back wholesale.
         """
 
+        with self._bundle_lock:
+            self._ensure_bundle_locked(analysis, architecture)
+
+    def _ensure_bundle_locked(self, analysis: AnalysisResult, architecture: Architecture) -> None:
         if self._bundle is not None or self._bundle_failed or not self._enable_codegen:
             self._bundle_failed = self._bundle_failed or not self._enable_codegen
             return
@@ -285,7 +338,12 @@ class LLMProvider(ReasoningProvider):
             "API (WSGI or http.server), and a tests/ directory with unittest tests that "
             "import the package and pass. Respond with STRICT JSON only: "
             "{\"files\": [{\"path\": \"relative/path.py\", \"content\": \"...\"}]}. "
-            "Put tests under tests/. Do not wrap content in markdown fences."
+            "Put tests under tests/. Do not wrap content in markdown fences.\n"
+            "SCOPE AND SIZE (hard limits — the reply must fit in one response): implement "
+            "the minimal runnable slice of the design — the listed API endpoints, "
+            "persistence, and analytics — not every component. At most 8 files, none "
+            "longer than ~150 lines; short docstrings, no commentary, no README. Tests: "
+            "one or two files covering the main flow end to end."
         )
         user = (
             f"Requirement:\n{analysis.normalized_problem or analysis.intent}\n\n"

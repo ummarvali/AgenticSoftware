@@ -5,20 +5,24 @@
 **Validation:** 4/4 checks passed
 
 ## Implementation Plan
-- Analyze & normalize the requirement
-- Design the architecture and API contract
-- Generate implementation
-- Generate unit + integration tests
-- Generate documentation
-- Validate (compile, test, contract, docs)
-- Summarize for human review
+- Level 0: design (design)
+- Level 1: code (code), docs (docs)
+- Level 2: tests (tests)
+- Level 3: validate (validate)
+- Level 4: summary (summary)
 
-## Rationale (key decisions)
+## Rationale (key decisions & agent decision log)
 - Base62 encoding of an offset numeric id for short, dense, URL-safe codes.
 - Idempotent shorten: identical live URLs reuse their code.
 - Store as a Protocol so durability is a deployment choice, not a rewrite.
 - WSGI core so the service is server- and framework-agnostic and unit-testable.
-- Persistence default: sqlite (NFRs imply durability/scale → recommend the SQLite backend as default).
+- Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).
+- Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default
+- CodeGenerator: generate - no code yet → generate from the design
+- DocGenerator: generate-docs - generate README and architecture docs
+- TestGenerator: generate-tests - generate unit + integration tests for the code
+- Validator: validate - compile code, run tests, check contract & docs
+- SummaryWriter: summarize - consolidate the run into the final summary
 
 
 ## API Contract
@@ -46,6 +50,35 @@
 - README.md
 - docs/ARCHITECTURE.md
 
+## Validation
+
+**Result:** 4/4 checks passed
+
+| Check | Result | Detail |
+| --- | --- | --- |
+| code compiles | PASS | all files compiled |
+| tests pass | PASS | Ran 20 tests in 0.002s  OK |
+| api contract present | PASS | openapi.yaml found |
+| documentation present | PASS | docs generated |
+
+Approach:
+- Static: every generated .py file is compiled (py_compile).
+- Dynamic: the generated unit + integration suite is executed in a subprocess with a timeout and a credential-scrubbed environment.
+- Contract: an OpenAPI document must exist whenever the design exposes an API.
+- Documentation: README/architecture docs must be present.
+- Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.
+- Human: a final acceptance gate reviews this report before the run is accepted.
+
+## Run Monitoring
+- provider: deterministic
+- tasks_completed: 5
+- retries: 0
+- repairs: 0
+- degradations: 0
+- parallel_levels: 1
+- reused_tasks: 0
+- human_gates_passed_before_summary: 2
+
 ## Risks
 - In-memory store is fastest but non-durable; SQLite adds durability at I/O cost.
 - Sequential-id base62 codes are predictable; a hash/random scheme trades guessability for a small collision-handling cost.
@@ -68,3 +101,4 @@
 - Offline deterministic engine covers known domains richly and unknown domains with a generic scaffold; it is not a general code synthesizer.
 - Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).
 - Human checkpoints are console-based in this prototype.
+- The validation sandbox is a subprocess with a timeout and scrubbed environment, not a network-isolated container.

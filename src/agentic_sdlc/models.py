@@ -236,6 +236,9 @@ class EngineeringSummary:
     risks: list[str] = field(default_factory=list)
     tradeoffs: list[str] = field(default_factory=list)
     validation: str = ""
+    validation_approach: list[str] = field(default_factory=list)
+    validation_checks: list[dict] = field(default_factory=list)
+    monitoring: dict = field(default_factory=dict)
     assumptions: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
 

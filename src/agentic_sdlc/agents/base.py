@@ -11,6 +11,7 @@ agents never call each other.
 from __future__ import annotations
 
 import abc
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +37,13 @@ class Agent(abc.ABC):
     #: Task category this agent fulfils; the orchestrator dispatches on it.
     category: str = "generic"
 
+    def __init__(self) -> None:
+        # Two tasks of the same category can share a DAG level and run concurrently.
+        # Serializing runs of the *same* agent keeps perceive→decide→act atomic, so the
+        # second run perceives the first one's result (and can decide to reuse it).
+        # Different agents still run in parallel.
+        self._run_lock = threading.RLock()
+
     def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
         """Read the state an agent needs to decide. Override to observe more."""
 
@@ -52,6 +60,10 @@ class Agent(abc.ABC):
     def run(self, ctx: AgentContext, task: Task) -> None:
         """Template method: perceive → decide (log rationale) → act."""
 
+        with self._run_lock:
+            self._run_locked(ctx, task)
+
+    def _run_locked(self, ctx: AgentContext, task: Task) -> None:
         obs = self.perceive(ctx, task)
         decision = self.decide(ctx, obs)
         ctx.blackboard.log(
@@ -61,7 +73,8 @@ class Agent(abc.ABC):
         )
         ctx.emit(self.name, f"decided: {decision.action} - {decision.rationale}")
         if not decision.proceed:
-            ctx.blackboard.log("skip", f"{self.name} chose to skip: {decision.rationale}")
+            ctx.blackboard.log("skip", f"{self.name} chose to skip: {decision.rationale}",
+                               agent=self.name, task=task.id)
             return
         self.act(ctx, task, decision)
 

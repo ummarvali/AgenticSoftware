@@ -20,13 +20,18 @@ class CodeGeneratorAgent(Agent):
     category = "code"
 
     def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
-        return {"already_generated": bool(ctx.blackboard.code)}
+        return {"already_generated": bool(ctx.blackboard.code), "task": task.id}
 
     def decide(self, ctx: AgentContext, obs: dict[str, Any]) -> AgentDecision:
         if obs["already_generated"]:
+            # The project is authored as one consistent bundle (code + contract). A
+            # fine-grained plan may list several code tasks; they are satisfied by that
+            # bundle, so re-running would only duplicate work — reuse instead.
             return AgentDecision(
-                "regenerate",
-                "code already exists on the blackboard → refresh from current design",
+                "reuse",
+                f"code already generated from the current design; "
+                f"'{obs['task']}' is covered by it",
+                proceed=False,
             )
         return AgentDecision("generate", "no code yet → generate from the design")
 
@@ -36,7 +41,7 @@ class CodeGeneratorAgent(Agent):
         artifacts = ctx.provider.generate_code(bb.analysis, bb.architecture)
         if not artifacts:
             raise ValueError("code generation produced no artifacts")
-        bb.code.extend(artifacts)
+        artifacts = bb.merge(bb.code, artifacts)
         ctx.tools.artifacts.write_all(artifacts)  # persist so tests can import them
         bb.log("code", f"generated {len(artifacts)} code/contract files",
                 files=[a.path for a in artifacts])
@@ -47,8 +52,16 @@ class TestGeneratorAgent(Agent):
     name = "TestGenerator"
     category = "tests"
 
+    def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
+        return {"already_generated": bool(ctx.blackboard.tests), "task": task.id}
+
     def decide(self, ctx: AgentContext, obs: dict[str, Any]) -> AgentDecision:
         assert ctx.blackboard.code, "tests require generated code"
+        if obs["already_generated"]:
+            return AgentDecision(
+                "reuse", f"test suite already generated; '{obs['task']}' is covered by it",
+                proceed=False,
+            )
         return AgentDecision("generate-tests",
                              "generate unit + integration tests for the code")
 
@@ -58,7 +71,7 @@ class TestGeneratorAgent(Agent):
         artifacts = ctx.provider.generate_tests(bb.analysis, bb.architecture, bb.code)
         if not artifacts:
             raise ValueError("test generation produced no artifacts")
-        bb.tests.extend(artifacts)
+        artifacts = bb.merge(bb.tests, artifacts)
         ctx.tools.artifacts.write_all(artifacts)
         bb.log("tests", f"generated {len(artifacts)} test files",
                 files=[a.path for a in artifacts])
@@ -69,14 +82,22 @@ class DocGeneratorAgent(Agent):
     name = "DocGenerator"
     category = "docs"
 
+    def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
+        return {"already_generated": bool(ctx.blackboard.docs), "task": task.id}
+
     def decide(self, ctx: AgentContext, obs: dict[str, Any]) -> AgentDecision:
+        if obs["already_generated"]:
+            return AgentDecision(
+                "reuse", f"documentation already generated; '{obs['task']}' is covered by it",
+                proceed=False,
+            )
         return AgentDecision("generate-docs", "generate README and architecture docs")
 
     def act(self, ctx: AgentContext, task: Task, decision: AgentDecision) -> None:
         bb = ctx.blackboard
         assert bb.analysis is not None and bb.architecture is not None
         artifacts = ctx.provider.generate_docs(bb.analysis, bb.architecture)
-        bb.docs.extend(artifacts)
+        artifacts = bb.merge(bb.docs, artifacts)
         ctx.tools.artifacts.write_all(artifacts)
         bb.log("docs", f"generated {len(artifacts)} documentation files",
                 files=[a.path for a in artifacts])

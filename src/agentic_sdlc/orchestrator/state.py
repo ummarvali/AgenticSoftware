@@ -8,6 +8,7 @@ what turns "a bunch of steps" into auditable, coordinated orchestration.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -19,6 +20,7 @@ from agentic_sdlc.models import (
     Artifact,
     EngineeringSummary,
     Requirement,
+    TaskGraph,
     ValidationReport,
 )
 from agentic_sdlc.tools import ToolBox
@@ -31,21 +33,54 @@ class Blackboard:
     requirement: Requirement
     analysis: Optional[AnalysisResult] = None
     architecture: Optional[Architecture] = None
+    task_graph: Optional[TaskGraph] = None   # the human-approved plan
     impact: list[str] = field(default_factory=list)
     code: list[Artifact] = field(default_factory=list)
     tests: list[Artifact] = field(default_factory=list)
     docs: list[Artifact] = field(default_factory=list)
     validation: Optional[ValidationReport] = None
+    validated_fingerprint: str = ""   # artifact set the current report was computed on
     summary: Optional[EngineeringSummary] = None
     assumptions: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
+    # Agents in the same DAG level may run concurrently; the event log is the one
+    # structure every agent appends to, so it is guarded. (Agents write disjoint
+    # blackboard sections — code vs docs — so those need no further locking.)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def all_artifacts(self) -> list[Artifact]:
         return [*self.code, *self.tests, *self.docs]
 
+    def merge(self, section: list[Artifact], new: list[Artifact]) -> list[Artifact]:
+        """Add artifacts to a section, replacing any existing one with the same path.
+
+        A fine-grained plan (several `code` tasks) or a repair pass must never leave
+        duplicate files on the blackboard — the artifact set is a *set*, keyed by path.
+        Returns the artifacts that were actually new or changed."""
+
+        with self._lock:
+            index = {a.path: i for i, a in enumerate(section)}
+            changed: list[Artifact] = []
+            for art in new:
+                i = index.get(art.path)
+                if i is None:
+                    index[art.path] = len(section)
+                    section.append(art)
+                    changed.append(art)
+                elif section[i].content != art.content:
+                    section[i] = art
+                    changed.append(art)
+            return changed
+
+    def fingerprint(self) -> str:
+        """Cheap identity of the current artifact set (paths + sizes), for idempotence."""
+
+        return "|".join(f"{a.path}:{len(a.content)}" for a in sorted(self.all_artifacts(), key=lambda a: a.path))
+
     def log(self, kind: str, message: str, **data: Any) -> dict[str, Any]:
         event = {"ts": round(time.time(), 3), "kind": kind, "message": message, **data}
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
         return event
 
 

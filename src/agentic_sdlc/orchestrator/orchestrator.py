@@ -18,7 +18,9 @@ carry real dependencies, agents share state, and failures are retried or degrade
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -52,6 +54,7 @@ class OrchestratorConfig:
     max_attempts: int = 2          # attempts per task before giving up
     backoff_seconds: float = 0.0   # delay between retries (0 keeps tests fast)
     max_repair_iterations: int = 1  # validation-driven self-correction rounds
+    parallel: bool = True          # run independent tasks of a DAG level concurrently
     verbose: bool = True
     # Fault injection for demonstrating recovery: {category: times_to_fail}.
     inject_fault: dict[str, int] = field(default_factory=dict)
@@ -70,6 +73,7 @@ class Orchestrator:
         self.provider = provider or get_provider(self.config.provider)
         self.gate = gate or (ConsoleApproval() if self.config.interactive else AutoApprove())
         self._fault_budget = dict(self.config.inject_fault)
+        self._fault_lock = threading.Lock()
 
     # -- public API -------------------------------------------------------- #
 
@@ -141,6 +145,7 @@ class Orchestrator:
 
     def _plan(self, ctx: AgentContext) -> TaskGraph:
         graph = TaskDecomposerAgent().build(ctx)
+        ctx.blackboard.task_graph = graph
         levels = graph.topological_levels()
         rendered = "\n".join(
             f"  level {i}: " + ", ".join(f"{t.id}({t.category})" for t in lvl)
@@ -153,11 +158,34 @@ class Orchestrator:
         return graph
 
     def _execute(self, ctx: AgentContext, graph: TaskGraph) -> None:
+        """Walk the DAG level by level; tasks inside a level have no mutual
+        dependency, so they run concurrently (a thread per task) unless
+        ``config.parallel`` is off. Level N+1 never starts before level N completes,
+        which is exactly the ordering the dependency graph guarantees."""
+
         for level_no, level in enumerate(graph.topological_levels()):
+            concurrent = self.config.parallel and len(level) > 1
             self._say(f"\n[orchestrator] --- level {level_no}: "
-                      f"{', '.join(t.id for t in level)} ---")
-            for task in level:
-                self._run_task(ctx, task)
+                      f"{', '.join(t.id for t in level)}"
+                      f"{' (parallel)' if concurrent else ''} ---")
+            if not concurrent:
+                for task in level:
+                    self._run_task(ctx, task)
+                continue
+            ctx.blackboard.log("parallel", f"level {level_no}: running "
+                               f"{len(level)} tasks concurrently",
+                               tasks=[t.id for t in level])
+            with ThreadPoolExecutor(max_workers=len(level),
+                                    thread_name_prefix=f"level{level_no}") as pool:
+                futures = {pool.submit(self._run_task, ctx, task): task for task in level}
+                halt: Optional[PipelineHalted] = None
+                for fut, task in futures.items():
+                    try:
+                        fut.result()          # waits for every task; surfaces exceptions
+                    except PipelineHalted as exc:
+                        halt = halt or exc    # let siblings finish, then halt once
+            if halt is not None:
+                raise halt
 
     def _repair_loop(self, ctx: AgentContext) -> None:
         """Agent-driven recovery: fix repairable validation findings and re-check.
@@ -232,11 +260,13 @@ class Orchestrator:
         raise PipelineHalted(f"required task '{task.id}' failed: {last_error}")
 
     def _maybe_inject_fault(self, category: str) -> None:
-        remaining = self._fault_budget.get(category, 0)
-        if remaining > 0:
+        with self._fault_lock:               # budget is shared across level threads
+            remaining = self._fault_budget.get(category, 0)
+            if remaining <= 0:
+                return
             self._fault_budget[category] = remaining - 1
-            raise RuntimeError(f"injected fault for '{category}' "
-                               f"(remaining {remaining - 1})")
+        raise RuntimeError(f"injected fault for '{category}' "
+                           f"(remaining {remaining - 1})")
 
     # -- helpers ----------------------------------------------------------- #
 
@@ -269,6 +299,8 @@ class Orchestrator:
             "retries": count("task_error"),
             "repairs": count("repair"),
             "degradations": count("degrade"),
+            "parallel_levels": count("parallel"),
+            "reused": count("skip"),
             "decisions": count("decision"),
             "gates": count("gate"),
             "halted": count("halted") > 0,
@@ -281,7 +313,8 @@ class Orchestrator:
         self._say(
             f"[observability] duration={run['duration_s']}s | tasks={run['tasks_ok']} "
             f"retries={run['retries']} repairs={run['repairs']} "
-            f"degraded={run['degradations']} gates={run['gates']} | "
+            f"degraded={run['degradations']} parallel_levels={run['parallel_levels']} "
+            f"reused={run['reused']} gates={run['gates']} | "
             f"provider={self.provider.name} | validation={run['validation']}"
         )
         if llm is not None and llm.calls:

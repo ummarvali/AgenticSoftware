@@ -9,7 +9,7 @@ description = "An agentic system that transforms a software requirement into a r
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Agentic SDLC Prototype" }]
+authors = [{ name = "Ummar Vali" }]
 dependencies = []
 
 [project.optional-dependencies]

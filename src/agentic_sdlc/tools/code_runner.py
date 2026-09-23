@@ -7,6 +7,7 @@ generated test can never block the pipeline.
 
 from __future__ import annotations
 
+import os
 import py_compile
 import subprocess
 import sys
@@ -26,6 +27,21 @@ class TestResult:
     ok: bool
     output: str
     returncode: int
+
+
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+
+def scrubbed_env() -> dict[str, str]:
+    """Environment for executing *generated* code: every variable that looks like a
+    credential (API keys, tokens, passwords) is removed, so model-authored tests can
+    never read the key that produced them. Byte-code writing is disabled so the
+    artifact folder stays clean."""
+
+    env = {k: v for k, v in os.environ.items()
+           if not any(m in k.upper() for m in _SECRET_MARKERS)}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
 
 
 class CodeRunner:
@@ -52,6 +68,7 @@ class CodeRunner:
             proc = subprocess.run(
                 [sys.executable, "-m", "unittest", "discover", "-s", tests_dir, "-v"],
                 cwd=str(workdir),
+                env=scrubbed_env(),
                 capture_output=True,
                 text=True,
                 timeout=timeout,

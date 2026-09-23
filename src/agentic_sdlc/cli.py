@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-root", default="runs", help="Where run outputs are written.")
     p.add_argument("--inject-fault", action="append", metavar="CATEGORY[:N]",
                    help="Force a category to fail N times to demonstrate recovery.")
+    p.add_argument("--sequential", action="store_true",
+                   help="Run tasks in a DAG level one at a time (default: concurrently).")
     p.add_argument("--quiet", action="store_true", help="Suppress step-by-step logging.")
     p.add_argument("--json", action="store_true", help="Print the full result as JSON.")
     return p
@@ -74,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         interactive=args.interactive,
         output_root=args.output_root,
         verbose=not args.quiet,
+        parallel=not args.sequential,
         inject_fault=_parse_faults(args.inject_fault),
     )
     requirement = Requirement(text=text, repo_path=args.repo)
@@ -105,11 +108,16 @@ def _print_report(result) -> None:
     if run:
         print(f"Monitoring     : {run['duration_s']}s | tasks={run['tasks_ok']} "
               f"retries={run['retries']} repairs={run['repairs']} "
-              f"degraded={run['degradations']} gates={run['gates']}")
+              f"degraded={run['degradations']} "
+              f"parallel_levels={run.get('parallel_levels', 0)} "
+              f"reused={run.get('reused', 0)} gates={run['gates']}")
     llm = (result.metrics or {}).get("llm")
     if llm and llm.get("calls"):
         print(f"LLM usage      : {len(llm['calls'])} calls, {llm['total_tokens']} tokens, "
               f"~${llm['est_cost_usd']:.4f}, {llm['fallbacks']} fallbacks")
+        for c in llm["calls"]:
+            if c.get("fallback"):
+                print(f"  fallback     : {c['stage']} -> deterministic ({c.get('error', '')[:140]})")
     print(f"Run record     : {result.output_dir.replace('artifacts', 'result.json')}")
     summary_path = Path(result.output_dir) / "ENGINEERING_SUMMARY.md"
     if summary_path.exists():

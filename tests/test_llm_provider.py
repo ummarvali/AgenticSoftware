@@ -22,8 +22,9 @@ class FakeClient:
         self._responses = list(responses)
         self.calls = 0
 
-    def complete(self, system, user, *, json_mode=True, timeout=30.0):
+    def complete(self, system, user, *, json_mode=True, timeout=30.0, max_tokens=4096):
         self.calls += 1
+        self.last_max_tokens = max_tokens
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -129,6 +130,87 @@ class LLMCodegenTests(unittest.TestCase):
         paths = {a.path for a in code}
         self.assertIn("url_shortener/service.py", paths)  # verified template took over
         self.assertGreaterEqual(provider.metrics.fallbacks, 1)
+
+
+class GuardrailTests(unittest.TestCase):
+    def test_call_budget_degrades_to_deterministic_instead_of_spending(self):
+        good = json.dumps({"kind": "greenfield", "intent": "x", "normalized_problem": "p",
+                           "functional_requirements": [], "non_functional_requirements": [],
+                           "ambiguities": [], "domain": "url_shortener", "confidence": 0.9})
+        client = FakeClient([good, good, good])
+        provider = LLMProvider(client, max_retries=1, backoff_s=0.0, max_calls=1,
+                               max_cost_usd=100.0, enable_codegen=False)
+        req = Requirement("Build a URL shortener.")
+        provider.analyze_requirement(req)          # 1st call: allowed
+        analysis = provider.analyze_requirement(req)   # 2nd: budget spent -> fallback
+        self.assertEqual(client.calls, 1, "model must not be called past the budget")
+        self.assertEqual(analysis.domain, "url_shortener")   # still a valid answer
+        self.assertEqual(provider.metrics.fallbacks, 1)
+        self.assertIn("budget", provider.metrics.calls[-1].error)
+
+    def test_cost_budget_is_enforced(self):
+        good = json.dumps({"kind": "greenfield", "intent": "x", "normalized_problem": "p",
+                           "functional_requirements": [], "non_functional_requirements": [],
+                           "ambiguities": [], "domain": "generic", "confidence": 0.5})
+        client = FakeClient([good, good])
+        provider = LLMProvider(client, max_retries=1, backoff_s=0.0, max_calls=99,
+                               max_cost_usd=0.0, enable_codegen=False)
+        provider.analyze_requirement(Requirement("Build something."))
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(provider.metrics.fallbacks, 1)
+
+    def test_generated_code_never_sees_secrets(self):
+        import os
+        from agentic_sdlc.tools.code_runner import scrubbed_env
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+        os.environ["SOME_TOKEN"] = "t"
+        os.environ["HARMLESS_VAR"] = "ok"
+        try:
+            env = scrubbed_env()
+            self.assertNotIn("ANTHROPIC_API_KEY", env)
+            self.assertNotIn("SOME_TOKEN", env)
+            self.assertEqual(env["HARMLESS_VAR"], "ok")
+            self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        finally:
+            for k in ("ANTHROPIC_API_KEY", "SOME_TOKEN", "HARMLESS_VAR"):
+                os.environ.pop(k, None)
+
+
+class LenientParsingTests(unittest.TestCase):
+    """Real models answer loosely ("201 Created"); a strict parser must not throw a whole
+    stage away over it. (Seen in a live Claude run: design fell back on int('201 Created').)"""
+
+    def test_design_accepts_textual_status_and_odd_types(self):
+        payload = json.dumps({
+            "overview": "o", "components": ["a"], "data_model": ["m"],
+            "api": [
+                {"method": "POST", "path": "/api/shorten", "summary": "s",
+                 "status": "201 Created / 400 Bad Request / 409 Conflict"},
+                {"method": "GET", "path": "/{code}", "summary": "r", "status": 302},
+                {"method": "GET", "path": "/healthz", "summary": "h", "status": None},
+            ],
+            "decisions": ["d"], "tradeoffs": ["t"],
+        })
+        provider = _provider([payload])
+        from agentic_sdlc.models import AnalysisResult, RequirementKind
+        arch = provider.design(AnalysisResult(kind=RequirementKind.GREENFIELD, intent="i",
+                                              normalized_problem="p"))
+        self.assertEqual([e.status for e in arch.api], [201, 302, 200])
+        self.assertEqual(provider.metrics.fallbacks, 0)
+
+    def test_codegen_gets_a_large_output_budget(self):
+        provider = _provider([json.dumps({"files": []})])
+        from agentic_sdlc.models import AnalysisResult, Architecture, RequirementKind
+        provider.generate_code(AnalysisResult(kind=RequirementKind.GREENFIELD, intent="i", normalized_problem="p"),
+                               Architecture(overview="o", components=["c"]))
+        self.assertGreaterEqual(provider._client.last_max_tokens, 32000)
+
+    def test_non_json_reply_error_shows_what_came_back(self):
+        provider = _provider(["Sure! Here is the design you asked for.", "still not json"])
+        from agentic_sdlc.models import AnalysisResult, RequirementKind
+        provider.design(AnalysisResult(kind=RequirementKind.GREENFIELD, intent="i", normalized_problem="p"))
+        errs = [c.error for c in provider.metrics.calls if c.error]
+        self.assertTrue(any("starts with: 'Sure! Here" in e for e in errs), errs)
 
 
 if __name__ == "__main__":

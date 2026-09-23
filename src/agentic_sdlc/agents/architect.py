@@ -22,9 +22,19 @@ class ArchitectAgent(Agent):
 
     def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
         assert ctx.blackboard.analysis is not None
-        return {"nfrs": ctx.blackboard.analysis.non_functional_requirements}
+        return {"nfrs": ctx.blackboard.analysis.non_functional_requirements,
+                "has_design": ctx.blackboard.architecture is not None,
+                "task": task.id}
 
     def decide(self, ctx: AgentContext, obs: dict[str, Any]) -> AgentDecision:
+        if obs["has_design"]:
+            # A plan may carry several design tasks (api, data model, scaling...). The
+            # design is produced once as a coherent whole; later design tasks reuse it
+            # rather than overwrite it with a divergent second opinion.
+            return AgentDecision(
+                "reuse", f"architecture already committed; '{obs['task']}' is covered by it",
+                proceed=False,
+            )
         text = " ".join(obs["nfrs"]).lower()
         if any(sig in text for sig in _DURABILITY_SIGNALS):
             return AgentDecision(

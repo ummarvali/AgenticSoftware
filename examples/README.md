@@ -2,6 +2,7 @@
 
 Three requirements exercise the three input classes the system must handle. Each run
 shows **task decomposition**, **multi-step orchestration**, and **output validation**.
+A fourth, recorded scenario shows the **same pipeline driven by a live model**.
 
 Run any example (from the project root):
 
@@ -57,6 +58,27 @@ Validation : 4/4 checks passed (PASS)
   refuses to claim success on an under-specified request and flags it for a human.
 
 ---
+
+## 4. Live model — `examples/llm-run/` (recorded)
+
+The same greenfield requirement, run with `--provider openai` against a real model
+(see the README for the free Gemini setup). This folder is a **snapshot of an actual
+run**, checked in so the model-driven path can be inspected without any API key:
+
+- `result.json` → `metrics.llm`: per-stage calls (`analyze`, `decompose`, `design`,
+  `codegen`), prompt/completion tokens, latency, estimated cost, and whether any stage
+  fell back to the deterministic engine and why.
+- `artifacts/` → the project the model authored, which passed the sandbox compile+test
+  gate before being accepted (or, if `metrics.llm` shows a `codegen` fallback, the
+  verified template that replaced it — the record is honest either way).
+- The model typically plans a **richer DAG** (20+ tasks, 10+ levels) than the offline
+  engine's 6. Watch the agents handle it: the first `design`/`code`/`tests`/`docs` task
+  does the work; later ones log a `reuse` decision (`reused=N` in the monitoring line),
+  so the artifact set stays at 15 unique files and every task still completes.
+- Compare with a deterministic run of the same input: same gates, same validator —
+  different brain, different plan.
+
+Refresh it with `python scripts/snapshot_run.py --name llm-run` after your own run.
 
 ## Demonstrating error handling & recovery
 

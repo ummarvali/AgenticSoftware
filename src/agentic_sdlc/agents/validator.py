@@ -24,7 +24,19 @@ class ValidatorAgent(Agent):
     name = "Validator"
     category = "validate"
 
+    def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
+        bb = ctx.blackboard
+        return {"fingerprint": bb.fingerprint(),
+                "validated": bb.validated_fingerprint if bb.validation else "",
+                "task": task.id}
+
     def decide(self, ctx: AgentContext, obs: dict[str, Any]) -> AgentDecision:
+        if obs["validated"] and obs["validated"] == obs["fingerprint"]:
+            return AgentDecision(
+                "reuse", f"artifact set unchanged since the last report; "
+                         f"'{obs['task']}' needs no re-run",
+                proceed=False,
+            )
         return AgentDecision("validate", "compile code, run tests, check contract & docs")
 
     def act(self, ctx: AgentContext, task: Task, decision: AgentDecision) -> None:
@@ -67,6 +79,7 @@ class ValidatorAgent(Agent):
 
         report = ValidationReport(checks=checks, risks=self._risks(bb))
         bb.validation = report
+        bb.validated_fingerprint = bb.fingerprint()
         bb.log("validation", report.summary,
                passed=report.passed, checks=[c.name for c in checks if not c.passed])
         ctx.emit(self.name, f"{report.summary}"
