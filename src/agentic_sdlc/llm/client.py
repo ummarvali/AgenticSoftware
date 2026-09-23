@@ -205,7 +205,11 @@ class AnthropicClient:
             messages=[{"role": "user", "content": user}],
             timeout=timeout,
         )
-        text = resp.content[0].text if resp.content else ""
+        text = ""
+        for block in resp.content or []:
+            if hasattr(block, "text"):  # skip thinking/other non-text blocks
+                text = block.text
+                break
         usage = getattr(resp, "usage", None)
         return LLMResponse(
             text=text,

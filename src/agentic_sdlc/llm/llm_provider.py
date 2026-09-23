@@ -66,7 +66,7 @@ class LLMProvider(ReasoningProvider):
         self,
         client: LLMClient,
         *,
-        timeout: float = 30.0,
+        timeout: float = 120.0,
         max_retries: int = 2,
         backoff_s: float = 0.0,
         enable_codegen: bool = True,
