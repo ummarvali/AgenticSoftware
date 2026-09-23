@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-sdlc"
+version = "1.0.0"
+description = "An agentic system that transforms a software requirement into a reviewable engineering outcome across the SDLC."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Agentic SDLC Prototype" }]
+dependencies = []
+
+[project.optional-dependencies]
+# The core prototype runs on the standard library only. `dev` adds the test runner
+# and (optionally) a real LLM backend so the same agents can call a live model.
+dev = ["pytest>=7.4"]
+llm = ["openai>=1.0"]
+
+[project.scripts]
+agentic-sdlc = "agentic_sdlc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
