@@ -173,7 +173,6 @@ class AnthropicClient:
     """
 
     def __init__(self, model: str | None = None) -> None:
-        self.model = model or os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -182,6 +181,18 @@ class AnthropicClient:
                 "Install it with: pip install -e \".[anthropic]\""
             ) from exc
         self._client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        # Honor an explicit model; else auto-pick one this account can access.
+        self.model = model or os.environ.get("ANTHROPIC_MODEL") or self._auto_model()
+
+    def _auto_model(self) -> str:
+        try:
+            ids = [m.id for m in self._client.models.list(limit=50).data]
+        except Exception:
+            return "claude-3-5-sonnet-20241022"
+        for mid in ids:
+            if "sonnet" in mid:
+                return mid
+        return ids[0] if ids else "claude-3-5-sonnet-20241022"
 
     def complete(self, system: str, user: str, *, json_mode: bool = True,
                  timeout: float = 30.0) -> LLMResponse:  # pragma: no cover - network
