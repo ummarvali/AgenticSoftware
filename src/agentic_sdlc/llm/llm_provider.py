@@ -52,6 +52,7 @@ class LLMProvider(ReasoningProvider):
         timeout: float = 30.0,
         max_retries: int = 2,
         backoff_s: float = 0.0,
+        enable_codegen: bool = True,
         metrics: MetricsCollector | None = None,
         fallback: ReasoningProvider | None = None,
     ) -> None:
@@ -59,8 +60,13 @@ class LLMProvider(ReasoningProvider):
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff = backoff_s
+        # When True, the model authors the project; the deterministic pack is used only
+        # if that output fails the sandbox compile+test gate below.
+        self._enable_codegen = enable_codegen
         self.metrics = metrics or MetricsCollector()
         self._fallback = fallback or DeterministicProvider()
+        self._bundle: dict[str, list[Artifact]] | None = None
+        self._bundle_failed = False
 
     # -- LLM call with retries + metrics ---------------------------------- #
 
@@ -197,14 +203,112 @@ class LLMProvider(ReasoningProvider):
             "design", llm, lambda: self._fallback.design(analysis)
         )
 
-    # Generation uses the verified packs for guaranteed-runnable output (reliability).
+    # Generation is model-authored, but only accepted if it passes a sandbox
+    # compile+test gate. Otherwise the verified template is used so a run never breaks.
     def generate_code(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
+        self._ensure_bundle(analysis, architecture)
+        if self._bundle is not None:
+            return self._bundle["code"]
         return self._fallback.generate_code(analysis, architecture)
 
     def generate_tests(
         self, analysis: AnalysisResult, architecture: Architecture, code: list[Artifact]
     ) -> list[Artifact]:
+        self._ensure_bundle(analysis, architecture)
+        if self._bundle is not None:
+            return self._bundle["tests"]
         return self._fallback.generate_tests(analysis, architecture, code)
 
     def generate_docs(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
+        self._ensure_bundle(analysis, architecture)
+        if self._bundle is not None:
+            return self._bundle["docs"]
         return self._fallback.generate_docs(analysis, architecture)
+
+    # -- model-authored project bundle + sandbox validation --------------- #
+
+    def _ensure_bundle(self, analysis: AnalysisResult, architecture: Architecture) -> None:
+        """Generate the whole project once, validate it, and cache or give up.
+
+        All three generation stages share one bundle so the emitted code and tests are
+        mutually consistent. The bundle is accepted only if every file compiles and the
+        generated tests pass in a throwaway sandbox; otherwise we fall back wholesale.
+        """
+
+        if self._bundle is not None or self._bundle_failed or not self._enable_codegen:
+            self._bundle_failed = self._bundle_failed or not self._enable_codegen
+            return
+        try:
+            files = self._llm_generate_files(analysis, architecture)
+            if not files or not any(f.path.startswith("tests/") for f in files):
+                raise ValueError("bundle missing a tests/ suite")
+            if not self._validate_bundle(files):
+                raise ValueError("generated project failed sandbox compile/tests")
+            self._bundle = {
+                "code": [f for f in files
+                         if not f.path.startswith("tests/") and f.kind != "docs"],
+                "tests": [f for f in files if f.path.startswith("tests/")],
+                "docs": [f for f in files if f.kind == "docs"],
+            }
+        except Exception as exc:  # noqa: BLE001 - degrade to the verified template
+            self._bundle_failed = True
+            self.metrics.record(CallRecord(
+                "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
+                fallback=True, error=str(exc)[:200],
+            ))
+
+    def _llm_generate_files(
+        self, analysis: AnalysisResult, architecture: Architecture
+    ) -> list[Artifact]:
+        api = "\n".join(f"  {e.method} {e.path} -> {e.response}" for e in architecture.api)
+        system = (
+            "You are a senior software engineer. Generate a COMPLETE, runnable Python "
+            "project for the requirement, consistent with the given architecture. Use "
+            "ONLY the Python standard library. Include an importable package, an HTTP "
+            "API (WSGI or http.server), and a tests/ directory with unittest tests that "
+            "import the package and pass. Respond with STRICT JSON only: "
+            "{\"files\": [{\"path\": \"relative/path.py\", \"content\": \"...\"}]}. "
+            "Put tests under tests/. Do not wrap content in markdown fences."
+        )
+        user = (
+            f"Requirement:\n{analysis.normalized_problem or analysis.intent}\n\n"
+            f"Architecture overview: {architecture.overview}\n"
+            f"Components: {', '.join(architecture.components)}\n"
+            f"Data model: {', '.join(architecture.data_model)}\n"
+            f"API:\n{api}"
+        )
+        data = self._ask_json("codegen", system, user)
+        files: list[Artifact] = []
+        for f in data.get("files", []):
+            path = str(f.get("path", "")).strip()
+            content = f.get("content", "")
+            if path and content:
+                files.append(Artifact(path, content, self._infer_kind(path)))
+        return files
+
+    @staticmethod
+    def _infer_kind(path: str) -> str:
+        if path.startswith("tests/"):
+            return "test"
+        if path.endswith((".md", ".markdown")):
+            return "docs"
+        if "openapi" in path or path.endswith((".yaml", ".yml")):
+            return "contract"
+        return "code"
+
+    def _validate_bundle(self, files: list[Artifact]) -> bool:
+        """Write the bundle to a temp dir, compile it, and run its tests."""
+
+        import tempfile
+        from pathlib import Path
+
+        from agentic_sdlc.tools import ArtifactStore, CodeRunner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp)
+            store.write_all(files)
+            runner = CodeRunner()
+            py = [Path(tmp) / f.path for f in files if f.path.endswith(".py")]
+            if any(not r.ok for r in runner.compile_python(py)):
+                return False
+            return runner.run_unittests(Path(tmp)).ok

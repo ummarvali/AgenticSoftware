@@ -56,8 +56,10 @@ Every model call is wrapped with a **timeout, bounded retries, strict JSON valid
 estimated cost, and fallback count (printed and saved in `result.json`).
 
 This is the SRE stance made concrete: an agent that is **LLM-first but never LLM-dependent**.
-(Code/test/doc *generation* uses verified templates so the demoed URL shortener is guaranteed
-to compile and pass its tests — a deliberate reliability choice, stated plainly, not hidden.)
+For **generation**, the model authors the whole project *from the requirement*; the provider
+then **compiles it and runs its tests in a throwaway sandbox** and accepts it only if it
+passes — otherwise it falls back to a verified template. So generation is genuinely
+requirement→code, while the demo stays guaranteed-runnable.
 
 ---
 
@@ -335,11 +337,12 @@ agentic-sdlc-system/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 25 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 27 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
-   the **LLM provider** (mock-driven: JSON parsing, metrics, and per-stage fallback), and
-   full orchestrator runs including **retry recovery**, **optional-task degradation**,
-   **required-task halt**, **human rejection**, and the **validation feedback loop**.
+   the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
+   **code-generation accept + sandbox-validated fallback**), and full orchestrator runs
+   including **retry recovery**, **optional-task degradation**, **required-task halt**,
+   **human rejection**, and the **validation feedback loop**.
 2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
    (shorten → 302 redirect → stats).
@@ -347,7 +350,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 25 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 27 tests ... OK
 ```
 
 ---
@@ -362,6 +365,7 @@ $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 25
 | A runaway generated test hangs the run | Test subprocess has a hard timeout |
 | Over-trusting autonomy | Three human approval gates; rejection halts and saves state |
 | Ambiguous input yields a false "done" | Ambiguous runs return **REVIEW NEEDED**, not PASS |
+| **LLM-authored code may not run** | Provider compiles + runs the generated tests in a sandbox; accepts only on pass, else falls back to the verified template |
 | **In-memory store is non-durable** | SQLite backend provided and unit-tested; selectable via env |
 | **Predictable sequential codes** | Documented; hashing/random slugs noted as the trade-off |
 | **Synchronous click recording** | Documented; async event pipeline is the scaling path |
@@ -379,9 +383,10 @@ contract/doc presence → risk register → human acceptance gate.
 - The generated service favours the standard library and clarity over framework features.
 
 **Limitations:**
-- The LLM drives **analysis, decomposition, and design**; **code/test/doc generation uses
-  verified templates** for guaranteed-runnable output (reliability over novelty). LLM-authored
-  code generation is a documented next step behind the same `ReasoningProvider` seam.
+- Code/test/doc generation is **model-authored and sandbox-validated**: the LLM writes the
+  project from the requirement and it is accepted only if it compiles and its tests pass;
+  otherwise a verified template is used. The default/offline (no-key) path always uses the
+  verified template.
 - Human checkpoints are **console-based** in this prototype (no web UI).
 - The brownfield repo scan is a summarizing heuristic (candidate touch points), not a full
   static-analysis/impact engine.
@@ -400,7 +405,7 @@ contract/doc presence → risk register → human acceptance gate.
 | Multi-step orchestration + cross-step coordination | `orchestrator.py` + `Blackboard` |
 | Error handling & recovery | `orchestrator._run_task` (retry / degrade / halt) + `_repair_loop` (validation feedback) |
 | Agent autonomy (perceive → decide → act) | `agents/base.py`, `decision` events per agent |
-| Code / API contract / tests / docs | `knowledge/url_shortener.py`, generator agents |
+| Code / API contract / tests / docs | LLM-authored + sandbox-gated (`llm/llm_provider.py`); verified template (`knowledge/url_shortener.py`) |
 | Validation & guardrails | `agents/validator.py`, `tools/*`, sandbox + timeout |
 | Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py` |
 | Final structured engineering summary | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |

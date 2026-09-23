@@ -86,5 +86,50 @@ class LLMProviderTests(unittest.TestCase):
         self.assertGreaterEqual(provider.metrics.fallbacks, 1)
 
 
+_VALID_BUNDLE = json.dumps({"files": [
+    {"path": "pkg/__init__.py", "content": ""},
+    {"path": "pkg/calc.py", "content": "def add(a, b):\n    return a + b\n"},
+    {"path": "tests/test_calc.py",
+     "content": ("import unittest\nfrom pkg.calc import add\n\n"
+                 "class T(unittest.TestCase):\n"
+                 "    def test_add(self):\n"
+                 "        self.assertEqual(add(1, 2), 3)\n\n"
+                 "if __name__ == '__main__':\n    unittest.main()\n")},
+    {"path": "README.md", "content": "# Generated\n"},
+]})
+
+# Syntactically broken code must be rejected by the sandbox gate.
+_BROKEN_BUNDLE = json.dumps({"files": [
+    {"path": "pkg/bad.py", "content": "def broken(:\n    pass\n"},
+    {"path": "tests/test_bad.py", "content": "import unittest\n"},
+]})
+
+
+class LLMCodegenTests(unittest.TestCase):
+    def _prepare(self, provider):
+        analysis = provider._fallback.analyze_requirement(
+            Requirement("Build a scalable URL shortener service."))
+        architecture = provider._fallback.design(analysis)
+        return analysis, architecture
+
+    def test_accepts_validated_model_authored_project(self):
+        provider = _provider([_VALID_BUNDLE])
+        analysis, architecture = self._prepare(provider)
+        code = provider.generate_code(analysis, architecture)
+        tests = provider.generate_tests(analysis, architecture, code)
+        paths = {a.path for a in code} | {a.path for a in tests}
+        self.assertIn("pkg/calc.py", paths)          # model-authored, not the template
+        self.assertIn("tests/test_calc.py", paths)
+        self.assertEqual(provider.metrics.fallbacks, 0)
+
+    def test_falls_back_to_verified_template_on_broken_code(self):
+        provider = _provider([_BROKEN_BUNDLE])
+        analysis, architecture = self._prepare(provider)
+        code = provider.generate_code(analysis, architecture)
+        paths = {a.path for a in code}
+        self.assertIn("url_shortener/service.py", paths)  # verified template took over
+        self.assertGreaterEqual(provider.metrics.fallbacks, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
