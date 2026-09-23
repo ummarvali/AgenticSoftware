@@ -24,7 +24,7 @@ flowchart TB
     subgraph Reasoning
         PROV[ReasoningProvider]
         DET[DeterministicProvider\n+ Knowledge Packs]
-        OAI[OpenAIProvider\noptional]
+        LLM[LLMProvider\nClaude/OpenAI/Azure]
     end
 
     subgraph Agents
@@ -51,7 +51,7 @@ flowchart TB
     ORCH --> ARCH & IMP & COD & TST & DOC & VAL & SUM
     AN & DEC & ARCH & IMP & COD & TST & DOC & VAL & SUM --> PROV
     PROV --> DET
-    PROV -.-> OAI
+    PROV -.-> LLM
     COD & TST & DOC --> FS
     VAL --> RUN
 ```
