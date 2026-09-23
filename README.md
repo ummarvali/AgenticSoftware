@@ -37,6 +37,24 @@ see [§2](#2-quick-start-setup-instructions).
 
 ---
 
+## Design philosophy — dual-mode by design
+
+The reasoning layer is a swappable seam (`ReasoningProvider`), so the *same* agents and
+orchestration run on either brain:
+
+- **Deterministic engine (default)** — reproducible, gradable, runs anywhere with zero cost,
+  zero network, and zero API keys. Ideal for demoing and grading.
+- **LLM backend (`--provider openai`)** — real model reasoning for open-ended requirements;
+  the same pipeline, a different brain. In this prototype the LLM drives requirement
+  *analysis*, and generation falls back to the deterministic engine so every run stays
+  complete.
+
+This is a deliberate architectural choice, not a limitation: a production agentic system must
+**degrade gracefully when the LLM is unavailable**, and the deterministic engine *is* that
+fallback layer.
+
+---
+
 ## Table of contents
 
 1. [Why this design](#1-why-this-design)
@@ -164,6 +182,28 @@ python -m unittest discover -s tests -v              # its own tests pass
 
 ## 4. How it works — architecture & control flow
 
+```
+  Requirement
+       │
+       ▼
+  Analyst ─► Decomposer ─►  DAG (by dependency level)
+  (normalize) (task graph)   ┌──────────────────────────┐
+       ▲                     │ Architect ─► CodeGen      │
+       │  human gates        │            ╲ DocGen  ╱    │
+       │ (clarify·plan·      │             ─► TestGen    │
+       │   accept)           └───────────┬──────────────┘
+       │                                 ▼
+       │                            ┌───────────┐  fail & repairable
+       │   every agent reads/       │ Validator │───────────────┐
+       │   writes the shared        └─────┬─────┘               ▼
+       │        BLACKBOARD ◄───────────── │ pass          ┌──────────┐
+       │   (state + decision log)         ▼               │  Repair  │
+       └───────────────────────────  SummaryWriter        └────┬─────┘
+                                          │   ▲   re-validate   │
+                                          ▼   └────────────────┘
+                                 artifacts + result.json
+```
+
 Full diagrams and rationale live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). In short:
 
 **Why these are agents, not functions.** Every agent runs an explicit
@@ -279,10 +319,10 @@ agentic-sdlc-system/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 19 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 21 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    and full orchestrator runs including **retry recovery**, **optional-task degradation**,
-   **required-task halt**, and **human rejection**.
+   **required-task halt**, **human rejection**, and the **validation feedback loop**.
 2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
    (shorten → 302 redirect → stats).
@@ -290,7 +330,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 19 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 21 tests ... OK
 ```
 
 ---
