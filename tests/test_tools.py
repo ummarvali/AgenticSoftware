@@ -78,5 +78,7 @@ class StaticSafetyScanTests(unittest.TestCase):
         self.assertFalse(any("json" in x.detail for x in f))
 
     def test_hardcoded_secret_is_high(self):
+        # Deliberately FAKE, key-shaped string (not a real credential): it exists only to
+        # prove the scanner flags hard-coded secrets in generated code.
         f = self._scan('KEY = "sk-ant-api03-abcdefghijklmnop"\n')
         self.assertTrue(any(x.rule == "hardcoded-secret" for x in f), f)

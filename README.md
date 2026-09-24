@@ -65,6 +65,20 @@ see [§2](#2-quick-start-setup-instructions).
 | How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
 | Scorecard across every scenario (runs in CI) | `python scripts/evaluate.py` |
 
+**Reviewer's 5-minute run** (no key, no third-party packages):
+
+```bash
+git clone https://github.com/ummarvali/AgenticSoftware && cd AgenticSoftware
+export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
+python3 -m unittest discover -s tests                   # 54 tests, OK
+python3 -m agentic_sdlc --file examples/greenfield.txt  # watch the agents plan, build, validate, report
+python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + 3 recorded live runs
+cat runs/*/artifacts/ENGINEERING_SUMMARY.md             # the engineering outcome for the run above
+```
+
+The recorded live runs are inspected the same way: `cat examples/llm-run/artifacts/ENGINEERING_SUMMARY.md`,
+and each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how).
+
 
 ---
 
@@ -166,8 +180,9 @@ Three principles shape the implementation:
 
 ## 2. Quick start (setup instructions)
 
-**Requirement:** Python 3.10+ (developed on 3.14). No third-party packages are needed for
-the core system.
+**Requirement:** Python 3.10+ (developed on 3.12; CI runs 3.10 and 3.12 on Linux and
+Windows). No third-party packages are needed for the core system — the model SDKs are
+optional extras.
 
 **One-command narrated demo** (all scenarios + fault injection + monitoring):
 
@@ -181,7 +196,7 @@ Or drive it yourself — **Linux / macOS / WSL**:
 cd AgenticSoftware
 export PYTHONPATH=src
 python3 -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
-python3 -m unittest discover -s tests -v          # 28 framework tests
+python3 -m unittest discover -s tests -v          # 54 framework tests
 python3 -m agentic_sdlc --interactive --file examples/greenfield.txt   # human approves each gate
 ```
 
@@ -201,7 +216,7 @@ agentic-sdlc "Build a scalable URL shortener service with APIs, persistence, and
 ```
 
 > On Windows the interpreter may be `py`, `python`, or a full path such as
-> `C:\Users\<you>\.local\bin\python3.14.exe`. Substitute accordingly.
+> `C:\Users\<you>\.local\bin\python3.12.exe`. Substitute accordingly.
 
 **Interactive mode (human approves each checkpoint):**
 
@@ -219,9 +234,14 @@ python -m pip install -e ".[dev]"; pytest        # or with pytest
 
 **Run on a real model (Claude):**
 
+The system was developed and exercised end to end against a real Anthropic key; the three
+recorded runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
+this repository and none is needed to run, test or evaluate it** — without a key the same
+pipeline runs on the deterministic engine. To reproduce a live run yourself:
+
 ```powershell
 pip install -e ".[anthropic]"
-$env:ANTHROPIC_API_KEY = "sk-ant-..."   # from console.anthropic.com (NOT a claude.ai login)
+$env:ANTHROPIC_API_KEY = "<your key>"   # from console.anthropic.com (NOT a claude.ai login); never commit it
 python -m agentic_sdlc --provider claude "Build a scalable URL shortener service with APIs, persistence, and analytics."
 # OpenAI/Azure instead: pip install -e ".[llm]"; set OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT); --provider openai
 ```
@@ -504,7 +524,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 49 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 54 tests ... OK
 ```
 
 4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
