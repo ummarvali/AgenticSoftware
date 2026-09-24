@@ -50,6 +50,33 @@ _PRICES: dict[str, tuple[float, float]] = {
 _DEFAULT_PRICE = (1.00, 3.00)
 
 
+def _temperature(default: float | None) -> float | None:
+    """Sampling temperature for structured engineering output (plans, designs, code).
+
+    ``AGENTIC_LLM_TEMPERATURE`` overrides; otherwise ``default`` is used. ``None`` means
+    "do not send the parameter" — some SDK/model versions reject it, and the model's own
+    default is then used. Callers must tolerate a rejected parameter (see ``_call``)."""
+
+    raw = os.environ.get("AGENTIC_LLM_TEMPERATURE")
+    if raw is None:
+        return default
+    return None if raw.strip().lower() in ("", "none", "default") else float(raw)
+
+
+def _call(fn, kwargs: dict, *, optional: tuple[str, ...] = ("temperature",)):
+    """Invoke an SDK method, dropping optional sampling parameters the installed SDK or
+    the selected model rejects, instead of failing the whole stage over a knob."""
+
+    try:
+        return fn(**kwargs)
+    except TypeError as exc:
+        for name in optional:
+            if name in kwargs and name in str(exc):
+                kwargs = {k: v for k, v in kwargs.items() if k != name}
+                return _call(fn, kwargs, optional=tuple(o for o in optional if o != name))
+        raise
+
+
 def _price_for(model: str) -> tuple[float, float]:
     for prefix, price in _PRICES.items():
         if model.startswith(prefix):
@@ -156,11 +183,13 @@ class OpenAIClient:
                 {"role": "user", "content": user},
             ],
             "timeout": timeout,
-            "temperature": 0.2,
         }
+        temp = _temperature(0.2)
+        if temp is not None:
+            kwargs["temperature"] = temp
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        resp = self._client.chat.completions.create(**kwargs)
+        resp = _call(self._client.chat.completions.create, kwargs)
         usage = getattr(resp, "usage", None)
         if getattr(resp.choices[0], "finish_reason", "") == "length":
             raise RuntimeError(f"model output truncated at max_tokens={max_tokens}")
@@ -209,16 +238,19 @@ class AnthropicClient:
             system = system + "\n\nReturn ONLY a valid JSON object: no prose, no markdown fences."
         kwargs = dict(model=self.model, max_tokens=max_tokens, system=system,
                       messages=[{"role": "user", "content": user}], timeout=timeout)
+        temp = _temperature(None)   # Anthropic: send only when explicitly configured
+        if temp is not None:
+            kwargs["temperature"] = temp
         if max_tokens > 8192:
             # Long outputs (a whole project) can take several minutes to generate. Streaming
             # keeps the connection alive token by token instead of waiting on one response,
             # which is what the Anthropic SDK requires for long non-interactive generations.
-            with self._client.messages.stream(**kwargs) as stream:
+            with _call(self._client.messages.stream, kwargs) as stream:
                 for _ in stream.text_stream:
                     pass
                 resp = stream.get_final_message()
         else:
-            resp = self._client.messages.create(**kwargs)
+            resp = _call(self._client.messages.create, kwargs)
         # Concatenate every text block (thinking blocks have no .text and are skipped).
         text = "".join(getattr(b, "text", "") or "" for b in (resp.content or []))
         if getattr(resp, "stop_reason", "") == "max_tokens":

@@ -34,7 +34,14 @@ curl http://127.0.0.1:8000/api/stats/<code>   # click analytics
 python -m unittest discover -s tests -v   # 20 tests, all pass
 ```
 
-Or as a container (no Python needed on the host):
+Or as a container (no Python needed on the host) — and the **agent itself** ships as an image too:
+
+```bash
+docker build -t agentic-sdlc .
+docker run --rm -v "$PWD/runs:/app/runs" agentic-sdlc --file examples/greenfield.txt
+```
+
+The demo service:
 
 ```bash
 docker build -t url-shortener demo
@@ -249,12 +256,12 @@ $ python -m agentic_sdlc "Build a scalable URL shortener service with APIs, pers
 [orchestrator] --- level 2: tests ---
 [TestGenerator] generated 3 test files
 [orchestrator] --- level 3: validate ---
-[Validator] 4/4 checks passed                      <- code compiled AND tests executed
+[Validator] 5/5 checks passed                      <- code compiled, tests executed, safety-scanned
 [orchestrator] --- level 4: summary ---
 
 Classification : greenfield (domain=url_shortener, confidence=0.92)
 Artifacts      : 15 files -> runs\...\artifacts
-Validation     : 4/4 checks passed (PASS)
+Validation     : 5/5 checks passed (PASS)
 ```
 
 **What it generated** (a real, runnable service — standard library only):
@@ -335,13 +342,17 @@ run's reasoning is auditable end to end.
   generated test suite in a sandboxed subprocess. If it reports a *repairable* finding
   (e.g. a missing API contract), the orchestrator routes control **back** to the `Repair`
   agent, which fixes it, and then **re-validates** — a bounded, agent-driven self-correction,
-  not a blind retry. (Watch the ambiguous example heal `3/4 → 4/4`.)
+  not a blind retry. (Watch the ambiguous example heal `4/5 → 5/5`.)
 - **Accept** — a final human gate reviews the validation report before `SummaryWriter`
   emits the summary and `result.json`.
 
 **Controlled autonomy** = agents run independently across many steps, but the run pauses at
 three gates (`ConsoleApproval` interactively, or `AutoApprove` for scripted/CI use), and any
-gate rejection halts cleanly while still saving the partial result.
+gate rejection halts cleanly while still saving the partial result. **Every run prints which
+gate mode is active and the outcome of each gate** (`[gate 1/3] … auto-approved` / `approved by
+human`) and records it as a `gate` event, so a reviewer of a non-interactive run can see the
+checkpoints were exercised. The console gate is the prototype's UI; `ApprovalGate` is the seam
+for a Slack/Jira/web approval in production.
 
 ---
 
@@ -351,7 +362,7 @@ See [`examples/README.md`](examples/README.md) for inputs, commands, and expecte
 the **greenfield**, **brownfield**, and **ambiguous** cases, plus the error-recovery demos.
 Highlights:
 
-- **Greenfield** → full URL-shortener package, `4/4` checks pass.
+- **Greenfield** → full URL-shortener package, `5/5` checks pass.
 - **Brownfield** ("...existing...") → an extra `impact` task is injected *before* `code`; the
   summary includes a Codebase-Impact section; `--repo <path>` scans a real repo.
 - **Ambiguous** ("Make the app faster.") → surfaces blocking questions with default
@@ -363,6 +374,7 @@ Highlights:
 
 ```
 AgenticSoftware/
+├─ Dockerfile / .dockerignore         Container image for the agent itself (`docker run agentic-sdlc …`)
 ├─ pyproject.toml                     Package metadata, entry point, pytest config
 ├─ requirements.txt                   Optional extras only (dev=pytest, llm=openai)
 ├─ .gitignore                         Excludes caches, venvs, and generated runs/
@@ -389,6 +401,7 @@ AgenticSoftware/
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
 │  ├─ cli.py                          Argument parsing + human-readable report
 │  ├─ models.py                       Typed contracts shared by all stages (incl. TaskGraph DAG)
+│  ├─ prompts/                        Stage system prompts (analyze/decompose/design/codegen .md) — versioned context
 │  ├─ llm/
 │  │  ├─ base.py                      ReasoningProvider interface (the swappable brain)
 │  │  ├─ client.py                    LLM clients (Claude/OpenAI/Azure) + usage metrics
@@ -419,7 +432,8 @@ AgenticSoftware/
 │  │  └─ __init__.py
 │  └─ tools/
 │     ├─ filesystem.py                ArtifactStore — sandboxed writes (path-traversal guard)
-│     ├─ code_runner.py               CodeRunner — py_compile + unittest subprocess
+│     ├─ code_runner.py               CodeRunner — py_compile + unittest subprocess (credential-scrubbed env)
+│     ├─ static_check.py               AST safety scan: dangerous calls, non-stdlib imports, hard-coded secrets
 │     └─ __init__.py                  ToolBox bundle handed to agents
 └─ tests/
    ├─ test_models.py                  DAG ordering / cycle & dangling-dep guards
@@ -434,7 +448,7 @@ AgenticSoftware/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 39 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 43 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
    **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
@@ -450,7 +464,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 39 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 43 tests ... OK
 ```
 
 4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
@@ -465,6 +479,7 @@ $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 39
 | Risk / trade-off | Mitigation in the system |
 | --- | --- |
 | Generated code could be wrong | Validator compiles + runs tests before acceptance |
+| Generated code could be **unsafe or hygienically bad** (eval/exec/shell=True, pickle, third-party or outdated packages, hard-coded keys) | `tools/static_check.py` AST scan is validation check 5; any high-severity finding fails validation → `REVIEW NEEDED` |
 | An agent step fails transiently | Retry-with-backoff, then degrade (optional) or halt (required) |
 | A bad/hostile artifact path | `ArtifactStore` rejects any path escaping the sandbox |
 | A runaway generated test hangs the run | Test subprocess has a hard timeout |
@@ -475,8 +490,9 @@ $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 39
 | **Predictable sequential codes** | Documented; hashing/random slugs noted as the trade-off |
 | **Synchronous click recording** | Documented; async event pipeline is the scaling path |
 
-The validation *strategy* is layered: static (compile) → dynamic (execute tests) →
-contract/doc presence → risk register → human acceptance gate.
+The validation *strategy* is layered: static (compile + **AST safety scan**: dangerous calls,
+non-stdlib imports, hard-coded secrets) → dynamic (execute tests) → contract/doc presence →
+risk register → human acceptance gate.
 
 ### Fault tolerance — what is enforced
 
@@ -599,7 +615,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Error handling & recovery | `orchestrator._run_task` (retry / degrade / halt) + `_repair_loop` (validation feedback) |
 | Agent autonomy (perceive → decide → act) | `agents/base.py`, `decision` events per agent |
 | Code / API contract / tests / docs | LLM-authored + sandbox-gated (`llm/llm_provider.py`); verified template (`knowledge/url_shortener.py`) |
-| Validation & guardrails | `agents/validator.py`, `tools/*`, sandbox + timeout |
+| Validation & guardrails | `agents/validator.py` (5 checks incl. AST safety scan), `tools/*`, sandbox + timeout |
 | Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py` |
 | Final structured engineering summary (plan as executed, rationale + decision log, artifacts, **validation approach + per-check results**, run monitoring, risks, trade-offs, assumptions, limitations) | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |
 | LLM reasoning + reliability fallback | `llm/llm_provider.py`, `llm/client.py` |
@@ -622,6 +638,14 @@ Not enforced in this prototype (documented, would be required for production):
   `DeterministicProvider._PACKS`. No agent or orchestrator change required.
 - **New capability:** add an `Agent`, one entry in `agents.DAG_AGENTS`, and a task in the
   decomposer with the matching `category`.
+- **Prompts are files, not code:** each stage's system prompt lives in
+  `src/agentic_sdlc/prompts/<stage>.md` (analyze, decompose, design, codegen). Edit and diff
+  them like any versioned context; point `AGENTIC_PROMPTS_DIR` at a folder to A/B a prompt set
+  without touching Python.
+- **Model temperature:** `AGENTIC_LLM_TEMPERATURE` sets it explicitly (OpenAI-compatible
+  backends default to `0.2`; Anthropic uses the model default unless set). If the installed
+  SDK or the selected model rejects the parameter, the call is retried without it rather
+  than failing the stage — a sampling knob must never take a run down.
 - **Live LLM:** `pip install -e ".[anthropic]"` (or `".[llm]"`), set `ANTHROPIC_API_KEY`
   (or `OPENAI_API_KEY` / Azure vars), run with `--provider claude` (or `openai`).
 

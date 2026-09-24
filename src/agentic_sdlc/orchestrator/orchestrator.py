@@ -96,6 +96,10 @@ class Orchestrator:
 
         result = RunResult(run_id=run_id, requirement=requirement, output_dir=str(output_dir))
         self._say(f"[orchestrator] provider: {self.provider.name}")
+        self._say("[orchestrator] human gates: "
+                  + ("console — you will be asked at each checkpoint"
+                     if self.config.interactive else
+                     "auto-approve (non-interactive; add --interactive to review each checkpoint)"))
         try:
             self._bootstrap(ctx)
             graph = self._plan(ctx)
@@ -140,6 +144,7 @@ class Orchestrator:
         )
         decision = self.gate.review("Requirement clarification", summary)
         ctx.blackboard.log("gate", f"clarification: {decision.note}", approved=decision.approved)
+        self._say(f"[gate 1/3] requirement clarification: {decision.note}")
         if not decision.approved:
             raise PipelineHalted("clarification checkpoint rejected")
 
@@ -153,6 +158,7 @@ class Orchestrator:
         )
         decision = self.gate.review("Execution plan approval", rendered)
         ctx.blackboard.log("gate", f"plan: {decision.note}", approved=decision.approved)
+        self._say(f"[gate 2/3] execution plan: {decision.note}")
         if not decision.approved:
             raise PipelineHalted("plan checkpoint rejected")
         return graph
@@ -223,6 +229,7 @@ class Orchestrator:
         )
         decision = self.gate.review("Final acceptance", summary)
         bb.log("gate", f"acceptance: {decision.note}", approved=decision.approved)
+        self._say(f"[gate 3/3] final acceptance: {decision.note}")
         if not decision.approved:
             raise PipelineHalted("final acceptance rejected")
 

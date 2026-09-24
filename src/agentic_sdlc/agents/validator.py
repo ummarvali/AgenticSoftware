@@ -14,6 +14,7 @@ from typing import Any
 from agentic_sdlc.agents.base import Agent, AgentDecision
 from agentic_sdlc.models import Check, Task, ValidationReport
 from agentic_sdlc.orchestrator.state import AgentContext
+from agentic_sdlc.tools.static_check import scan_tree
 
 #: Checks the RepairAgent knows how to fix automatically. Anything else that fails
 #: (e.g. a compile error or a failing test) requires human attention.
@@ -76,6 +77,16 @@ class ValidatorAgent(Agent):
         docs_exist = any(a.kind == "docs" for a in bb.docs)
         checks.append(Check("documentation present", docs_exist,
                             "docs generated" if docs_exist else "no docs generated"))
+
+        # 5) Static safety scan: dangerous calls, non-stdlib imports, hard-coded secrets.
+        findings = scan_tree(out)
+        high = [f for f in findings if f.severity == "high"]
+        checks.append(Check(
+            "static safety scan",
+            not high,
+            (f"{len(findings)} finding(s), none high-severity" if findings else "no findings")
+            if not high else "; ".join(str(f) for f in high[:5]),
+        ))
 
         report = ValidationReport(checks=checks, risks=self._risks(bb))
         bb.validation = report

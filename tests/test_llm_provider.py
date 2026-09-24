@@ -215,5 +215,42 @@ class LenientParsingTests(unittest.TestCase):
         self.assertTrue(any("starts with: 'Sure! Here" in e for e in errs), errs)
 
 
+class SamplingParamToleranceTests(unittest.TestCase):
+    """A rejected sampling knob (e.g. an SDK without `temperature`) must not fail a stage."""
+
+    def test_call_drops_rejected_temperature_and_retries(self):
+        from agentic_sdlc.llm.client import _call
+        seen = []
+        def fake_create(**kw):
+            seen.append(dict(kw))
+            if "temperature" in kw:
+                raise TypeError("Messages.create() got an unexpected keyword argument 'temperature'")
+            return "ok"
+        out = _call(fake_create, {"model": "m", "temperature": 0.2, "max_tokens": 10})
+        self.assertEqual(out, "ok")
+        self.assertEqual(len(seen), 2)
+        self.assertNotIn("temperature", seen[1])
+        self.assertEqual(seen[1]["max_tokens"], 10)
+
+    def test_unrelated_type_errors_still_raise(self):
+        from agentic_sdlc.llm.client import _call
+        def fake(**kw):
+            raise TypeError("something else entirely")
+        with self.assertRaises(TypeError):
+            _call(fake, {"temperature": 0.2})
+
+    def test_anthropic_temperature_is_opt_in(self):
+        import os
+        from agentic_sdlc.llm.client import _temperature
+        os.environ.pop("AGENTIC_LLM_TEMPERATURE", None)
+        self.assertIsNone(_temperature(None))
+        self.assertEqual(_temperature(0.2), 0.2)
+        os.environ["AGENTIC_LLM_TEMPERATURE"] = "0"
+        try:
+            self.assertEqual(_temperature(None), 0.0)
+        finally:
+            os.environ.pop("AGENTIC_LLM_TEMPERATURE", None)
+
+
 if __name__ == "__main__":
     unittest.main()

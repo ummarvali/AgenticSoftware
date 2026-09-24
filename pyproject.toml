@@ -25,6 +25,10 @@ agentic-sdlc = "agentic_sdlc.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Stage prompts are shipped with the package: version-controlled context, not code.
+agentic_sdlc = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

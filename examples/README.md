@@ -23,7 +23,7 @@ python -m agentic_sdlc --file examples/ambiguous.txt
 - **Task graph (5 levels):** `design → (code ∥ docs) → tests → validate → summary`
 - **Output:** 15 artifacts — full `url_shortener/` package, `openapi.yaml`, 3 test files,
   `README.md`, `docs/ARCHITECTURE.md`, `ENGINEERING_SUMMARY.md`
-- **Validation:** `4/4 checks passed` (code compiles, tests pass, contract present, docs present)
+- **Validation:** `5/5 checks passed` (code compiles, tests pass, contract present, docs present, static safety scan)
 
 ```
 [orchestrator] --- level 0: design ---
@@ -31,7 +31,7 @@ python -m agentic_sdlc --file examples/ambiguous.txt
 [orchestrator] --- level 2: tests ---
 [orchestrator] --- level 3: validate ---
 [orchestrator] --- level 4: summary ---
-Validation : 4/4 checks passed (PASS)
+Validation : 5/5 checks passed (PASS)
 ```
 
 ## 2. Brownfield — `examples/brownfield.txt`
@@ -44,7 +44,7 @@ Validation : 4/4 checks passed (PASS)
 - **Codebase impact:** identifies affected modules and the new rate-limiter concern
   (see the *Codebase Impact* section in `ENGINEERING_SUMMARY.md`). Pass `--repo <path>`
   to also scan a real repository for candidate touch points.
-- **Validation:** `4/4 checks passed`
+- **Validation:** `5/5 checks passed`
 
 ## 3. Ambiguous — `examples/ambiguous.txt`
 
@@ -54,7 +54,7 @@ Validation : 4/4 checks passed (PASS)
 - **Behaviour:** the analyst surfaces blocking questions and records a **default
   assumption** for each, so autonomy proceeds transparently. In `--interactive` mode a
   human resolves them at the clarification gate.
-- **Validation:** `3/4 checks — REVIEW NEEDED`. This is the *correct* outcome: the system
+- **Validation:** `4/5 checks — REVIEW NEEDED`. This is the *correct* outcome: the system
   refuses to claim success on an under-specified request and flags it for a human.
 
 ---

@@ -2,7 +2,7 @@
 
 **Requirement:** Build a scalable URL shortener service with APIs, persistence, and analytics.
 **Classification:** greenfield
-**Validation:** 4/4 checks passed
+**Validation:** 5/5 checks passed
 
 ## Implementation Plan
 - Level 0: design (design)
@@ -52,7 +52,7 @@
 
 ## Validation
 
-**Result:** 4/4 checks passed
+**Result:** 5/5 checks passed
 
 | Check | Result | Detail |
 | --- | --- | --- |
@@ -60,12 +60,14 @@
 | tests pass | PASS | Ran 20 tests in 0.002s  OK |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
+| static safety scan | PASS | no findings |
 
 Approach:
 - Static: every generated .py file is compiled (py_compile).
 - Dynamic: the generated unit + integration suite is executed in a subprocess with a timeout and a credential-scrubbed environment.
 - Contract: an OpenAPI document must exist whenever the design exposes an API.
 - Documentation: README/architecture docs must be present.
+- Static safety: an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle), imports outside the standard library, and hard-coded secrets.
 - Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.
 - Human: a final acceptance gate reviews this report before the run is accepted.
 

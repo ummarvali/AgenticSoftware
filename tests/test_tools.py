@@ -43,3 +43,40 @@ class CodeRunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaticSafetyScanTests(unittest.TestCase):
+    """The AST guardrail catches what a code reviewer would refuse on sight."""
+
+    def _scan(self, source):
+        import tempfile
+        from pathlib import Path
+        from agentic_sdlc.tools.static_check import scan_tree
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "app").mkdir()
+            (Path(tmp) / "app" / "__init__.py").write_text("")
+            (Path(tmp) / "app" / "m.py").write_text(source)
+            return scan_tree(Path(tmp))
+
+    def test_clean_stdlib_code_has_no_high_findings(self):
+        f = self._scan("import json\nfrom app import x\nfrom . import y\n\ndef ok():\n    return json.dumps({})\n")
+        self.assertFalse([x for x in f if x.severity == "high"], f)
+
+    def test_dangerous_calls_are_high(self):
+        f = self._scan("import os, subprocess\n\ndef bad(c):\n    eval(c)\n    os.system(c)\n    subprocess.run(c, shell=True)\n")
+        rules = sorted({(x.rule, x.detail) for x in f if x.severity == "high"})
+        self.assertIn(("dangerous-call", "eval()"), rules)
+        self.assertIn(("dangerous-call", "os.system()"), rules)
+        self.assertIn(("dangerous-call", "subprocess.run(shell=True)"), rules)
+
+    def test_non_stdlib_import_is_high(self):
+        import sys
+        if not hasattr(sys, "stdlib_module_names"):
+            self.skipTest("needs Python 3.10+")
+        f = self._scan("import requests\nimport json\n")
+        self.assertTrue(any(x.rule == "non-stdlib-import" and "requests" in x.detail for x in f), f)
+        self.assertFalse(any("json" in x.detail for x in f))
+
+    def test_hardcoded_secret_is_high(self):
+        f = self._scan('KEY = "sk-ant-api03-abcdefghijklmnop"\n')
+        self.assertTrue(any(x.rule == "hardcoded-secret" for x in f), f)

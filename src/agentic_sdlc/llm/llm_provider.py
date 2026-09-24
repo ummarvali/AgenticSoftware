@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import threading
 import time
@@ -27,6 +28,7 @@ from agentic_sdlc.llm.base import ReasoningProvider
 from agentic_sdlc.llm.client import CallRecord, LLMClient, MetricsCollector
 from agentic_sdlc.llm.deterministic import DeterministicProvider
 from agentic_sdlc.models import (
+
     AnalysisResult,
     Ambiguity,
     ApiEndpoint,
@@ -37,6 +39,22 @@ from agentic_sdlc.models import (
     Task,
     TaskGraph,
 )
+
+# ---------------------------------------------------------------------------
+# Prompts are version-controlled *context*, not code. Each stage's system prompt
+# lives in src/agentic_sdlc/prompts/<stage>.md so it can be reviewed, diffed and
+# changed without touching Python. AGENTIC_PROMPTS_DIR overrides the directory.
+# ---------------------------------------------------------------------------
+_PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+
+
+def load_prompt(stage: str) -> str:
+    override = os.environ.get("AGENTIC_PROMPTS_DIR")
+    base = Path(override) if override else _PROMPTS_DIR
+    path = base / f"{stage}.md"
+    if not path.exists():
+        raise FileNotFoundError(f"prompt for stage '{stage}' not found: {path}")
+    return path.read_text(encoding="utf-8").strip()
 
 _KNOWN_CATEGORIES = {
     "design", "codebase_impact", "code", "tests", "docs", "validate", "summary",
@@ -175,15 +193,7 @@ class LLMProvider(ReasoningProvider):
 
     def analyze_requirement(self, requirement: Requirement) -> AnalysisResult:
         def llm() -> AnalysisResult:
-            system = (
-                "You are a senior software engineer. Analyze the requirement and "
-                "respond with STRICT JSON only, with keys: kind "
-                "(greenfield|brownfield|ambiguous), intent, normalized_problem, "
-                "functional_requirements (string[]), non_functional_requirements "
-                "(string[]), ambiguities (array of {question, why_it_matters, "
-                "default_assumption}), domain (short slug; use 'url_shortener' for "
-                "URL-shortening work), confidence (number 0..1)."
-            )
+            system = load_prompt("analyze")
             user = requirement.text
             if requirement.repo_path:
                 user += f"\n\n(An existing repository is provided at: {requirement.repo_path})"
@@ -209,14 +219,7 @@ class LLMProvider(ReasoningProvider):
 
     def decompose(self, analysis: AnalysisResult) -> TaskGraph:
         def llm() -> TaskGraph:
-            system = (
-                "Decompose the engineering problem into an executable task DAG. "
-                "Respond with STRICT JSON only: {\"tasks\": [{id, title, description, "
-                "depends_on (string[]), category, priority (int)}]}. category MUST be "
-                "one of: design, codebase_impact, code, tests, docs, validate, summary. "
-                "Include design, code, tests, docs, validate, summary; add "
-                "codebase_impact only for brownfield. Ensure the graph is acyclic."
-            )
+            system = load_prompt("decompose")
             user = analysis.normalized_problem or analysis.intent
             data = self._ask_json("decompose", system, user)
             tasks = [Task(
@@ -240,13 +243,7 @@ class LLMProvider(ReasoningProvider):
 
     def design(self, analysis: AnalysisResult) -> Architecture:
         def llm() -> Architecture:
-            system = (
-                "Design the architecture. Respond with STRICT JSON only: {overview, "
-                "components (string[]), data_model (string[]), api (array of {method, "
-                "path, summary, request, response, status}), decisions (string[]), "
-                "tradeoffs (string[])}. 'status' is a single integer HTTP status for the "
-                "success case (e.g. 201); 'method' is one verb."
-            )
+            system = load_prompt("design")
             data = self._ask_json("design", system, analysis.normalized_problem or analysis.intent)
             arch = Architecture(
                 overview=data.get("overview", ""),
@@ -333,20 +330,7 @@ class LLMProvider(ReasoningProvider):
         self, analysis: AnalysisResult, architecture: Architecture
     ) -> list[Artifact]:
         api = "\n".join(f"  {e.method} {e.path} -> {e.response}" for e in architecture.api)
-        system = (
-            "You are a senior software engineer. Generate a COMPLETE, runnable Python "
-            "project for the requirement, consistent with the given architecture. Use "
-            "ONLY the Python standard library. Include an importable package, an HTTP "
-            "API (WSGI or http.server), and a tests/ directory with unittest tests that "
-            "import the package and pass. Respond with STRICT JSON only: "
-            "{\"files\": [{\"path\": \"relative/path.py\", \"content\": \"...\"}]}. "
-            "Put tests under tests/. Do not wrap content in markdown fences.\n"
-            "SCOPE AND SIZE (hard limits — the reply must fit in one response): implement "
-            "the minimal runnable slice of the design — the listed API endpoints, "
-            "persistence, and analytics — not every component. At most 8 files, none "
-            "longer than ~150 lines; short docstrings, no commentary, no README. Tests: "
-            "one or two files covering the main flow end to end."
-        )
+        system = load_prompt("codegen")
         user = (
             f"Requirement:\n{analysis.normalized_problem or analysis.intent}\n\n"
             f"Architecture overview: {architecture.overview}\n"

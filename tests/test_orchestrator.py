@@ -190,7 +190,7 @@ class EngineeringSummaryTests(unittest.TestCase):
             self.assertTrue(s.implementation_plan and s.implementation_plan[0].startswith("Level 0:"))
             self.assertTrue(s.rationale)
             self.assertEqual(len(s.artifacts), 14)   # the summary does not list itself
-            self.assertEqual(len(s.validation_checks), 4)
+            self.assertEqual(len(s.validation_checks), 5)
             self.assertTrue(all(c["passed"] for c in s.validation_checks))
             self.assertGreaterEqual(len(s.validation_approach), 5)
             self.assertTrue(s.risks and s.tradeoffs and s.assumptions and s.limitations)

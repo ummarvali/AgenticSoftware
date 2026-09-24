@@ -56,6 +56,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Build the agent image and run the mandatory use case inside it
+        run: |
+          docker build -t agentic-sdlc:ci .
+          docker run --rm agentic-sdlc:ci --quiet --file examples/greenfield.txt
       - name: Build
         run: docker build -t url-shortener:ci demo
       - name: Smoke test the container

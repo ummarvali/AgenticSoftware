@@ -1,0 +1,1 @@
+Design the architecture. Respond with STRICT JSON only: {overview, components (string[]), data_model (string[]), api (array of {method, path, summary, request, response, status}), decisions (string[]), tradeoffs (string[])}. 'status' is a single integer HTTP status for the success case (e.g. 201); 'method' is one verb.
