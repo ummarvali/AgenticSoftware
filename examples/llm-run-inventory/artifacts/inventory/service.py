@@ -1,162 +1,229 @@
-"""Core business logic for the inventory service."""
-from datetime import datetime, timezone
-
-from . import models
-from .store import Store
-
-
-def _now():
-    return datetime.now(timezone.utc).isoformat()
+"""Core business logic: warehouses, products, stock, thresholds, alerts, audit."""
+import uuid
+import json
+from . import db
 
 
-class NotFoundError(Exception):
-    pass
-
-
-class ValidationError(Exception):
-    pass
-
-
-class ConflictError(Exception):
-    pass
+class ServiceError(Exception):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
 
 
 class InventoryService:
-    def __init__(self, store=None):
-        self.store = store or Store()
+    def __init__(self, conn):
+        self.conn = conn
 
-    # Products
-    def create_product(self, sku, name, description=""):
-        if not sku or not name:
-            raise ValidationError("sku and name are required")
-        pid = self.store.next_id("product")
-        now = _now()
-        product = models.Product(id=pid, sku=sku, name=name, description=description,
-                                  created_at=now, updated_at=now)
-        return self.store.add_product(product)
+    def _new_id(self, prefix):
+        return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-    def get_product(self, product_id):
-        product = self.store.get_product(product_id)
-        if not product:
-            raise NotFoundError("product not found")
-        return product
+    def check_api_key(self, key):
+        if not key:
+            return False
+        row = self.conn.execute("SELECT 1 FROM api_keys WHERE key=?", (key,)).fetchone()
+        return row is not None
 
-    # Warehouses
-    def create_warehouse(self, code, name, location=""):
-        if not code or not name:
-            raise ValidationError("code and name are required")
-        wid = self.store.next_id("warehouse")
-        now = _now()
-        warehouse = models.Warehouse(id=wid, code=code, name=name, location=location,
-                                     created_at=now, updated_at=now)
-        return self.store.add_warehouse(warehouse)
+    def create_warehouse(self, name, location):
+        wid = self._new_id("wh")
+        ts = db.now()
+        self.conn.execute(
+            "INSERT INTO warehouses(id,name,location,created_at) VALUES(?,?,?,?)",
+            (wid, name, location, ts),
+        )
+        self.conn.commit()
+        return {"id": wid, "name": name, "location": location, "created_at": ts}
 
-    def get_warehouse(self, warehouse_id):
-        warehouse = self.store.get_warehouse(warehouse_id)
-        if not warehouse:
-            raise NotFoundError("warehouse not found")
-        return warehouse
+    def list_warehouses(self):
+        rows = self.conn.execute("SELECT id,name,location FROM warehouses").fetchall()
+        return [dict(r) for r in rows]
 
-    # Stock
-    def create_stock_item(self, product_id, warehouse_id, quantity=0):
-        self.get_product(product_id)
-        self.get_warehouse(warehouse_id)
-        if quantity < 0:
-            raise ValidationError("quantity cannot be negative")
-        if self.store.find_stock_item(product_id, warehouse_id):
-            raise ConflictError("stock item already exists")
-        sid = self.store.next_id("stock_item")
-        now = _now()
-        item = models.StockItem(id=sid, product_id=product_id, warehouse_id=warehouse_id,
-                                 quantity=quantity, reserved_quantity=0, version=1, updated_at=now)
-        return self.store.add_stock_item(item)
+    def create_product(self, name, unit):
+        pid = self._new_id("pr")
+        ts = db.now()
+        self.conn.execute(
+            "INSERT INTO products(id,name,unit,created_at) VALUES(?,?,?,?)",
+            (pid, name, unit, ts),
+        )
+        self.conn.commit()
+        return {"id": pid, "name": name, "unit": unit, "created_at": ts}
+
+    def list_products(self):
+        rows = self.conn.execute("SELECT id,name,unit FROM products").fetchall()
+        return [dict(r) for r in rows]
+
+    def _default_threshold(self):
+        row = self.conn.execute(
+            "SELECT value FROM global_settings WHERE key='default_low_stock_threshold'"
+        ).fetchone()
+        return int(row["value"]) if row else None
+
+    def add_stock(self, warehouse_id, product_id, quantity, threshold=None):
+        if quantity is None or quantity < 0:
+            raise ServiceError("quantity must be a non-negative number")
+        wh = self.conn.execute("SELECT id FROM warehouses WHERE id=?", (warehouse_id,)).fetchone()
+        pr = self.conn.execute("SELECT id FROM products WHERE id=?", (product_id,)).fetchone()
+        if not wh or not pr:
+            raise ServiceError("warehouse or product not found", 404)
+        existing = self.conn.execute(
+            "SELECT * FROM stock_levels WHERE warehouse_id=? AND product_id=?",
+            (warehouse_id, product_id),
+        ).fetchone()
+        if existing:
+            raise ServiceError("stock already exists; use adjustments", 409)
+        ts = db.now()
+        self.conn.execute(
+            "INSERT INTO stock_levels(warehouse_id,product_id,quantity,threshold,version,updated_at)"
+            " VALUES(?,?,?,?,0,?)",
+            (warehouse_id, product_id, quantity, threshold, ts),
+        )
+        self.conn.commit()
+        return {
+            "warehouse_id": warehouse_id,
+            "product_id": product_id,
+            "quantity": quantity,
+            "threshold": threshold,
+            "version": 0,
+        }
+
+    def set_threshold(self, warehouse_id, product_id, threshold):
+        row = self.conn.execute(
+            "SELECT * FROM stock_levels WHERE warehouse_id=? AND product_id=?",
+            (warehouse_id, product_id),
+        ).fetchone()
+        if not row:
+            raise ServiceError("stock record not found", 404)
+        self.conn.execute(
+            "UPDATE stock_levels SET threshold=? WHERE warehouse_id=? AND product_id=?",
+            (threshold, warehouse_id, product_id),
+        )
+        self.conn.commit()
+        return {"warehouse_id": warehouse_id, "product_id": product_id, "threshold": threshold}
 
     def get_stock(self, warehouse_id, product_id):
-        item = self.store.find_stock_item(product_id, warehouse_id)
-        if not item:
-            raise NotFoundError("stock item not found")
-        return item
+        row = self.conn.execute(
+            "SELECT * FROM stock_levels WHERE warehouse_id=? AND product_id=?",
+            (warehouse_id, product_id),
+        ).fetchone()
+        if not row:
+            raise ServiceError("stock record not found", 404)
+        return dict(row)
 
-    def list_stock(self, page=1, page_size=20):
-        items = sorted(self.store.list_stock_items(), key=lambda i: i.id)
-        total = len(items)
-        start = (page - 1) * page_size
-        end = start + page_size
-        return items[start:end], total
+    def get_stock_by_product(self, product_id):
+        rows = self.conn.execute(
+            "SELECT warehouse_id,quantity,threshold FROM stock_levels WHERE product_id=?",
+            (product_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
-    def adjust_stock(self, product_id, warehouse_id, delta, reason="", actor="system", correlation_id=None):
-        item = self.store.find_stock_item(product_id, warehouse_id)
-        if not item:
-            raise NotFoundError("stock item not found")
-        new_quantity = item.quantity + delta
-        if new_quantity < 0:
-            raise ValidationError("resulting quantity cannot be negative")
-        item.quantity = new_quantity
-        item.version += 1
-        item.updated_at = _now()
+    def get_stock_by_warehouse(self, warehouse_id):
+        rows = self.conn.execute(
+            "SELECT product_id,quantity,threshold FROM stock_levels WHERE warehouse_id=?",
+            (warehouse_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
-        aid = self.store.next_id("adjustment")
-        adjustment = models.StockAdjustment(
-            id=aid, stock_item_id=item.id, delta=delta, resulting_quantity=new_quantity,
-            reason=reason, actor=actor, correlation_id=correlation_id, created_at=_now())
-        self.store.add_adjustment(adjustment)
+    def list_alerts(self):
+        rows = self.conn.execute(
+            "SELECT * FROM alerts WHERE status='ACTIVE' ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
-        alert_triggered = self._evaluate_threshold(product_id, warehouse_id, new_quantity)
-        return adjustment, item, alert_triggered
+    def list_audit(self):
+        rows = self.conn.execute(
+            "SELECT * FROM stock_adjustments ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
-    def _evaluate_threshold(self, product_id, warehouse_id, quantity):
-        threshold = self.store.find_threshold(product_id, warehouse_id)
-        if threshold is None:
-            threshold = self.store.find_threshold(product_id, None)
-        if threshold is None:
-            return False
-        active = self.store.find_active_alert(product_id, warehouse_id)
-        if quantity < threshold.min_quantity:
-            if active:
-                return False
-            aid = self.store.next_id("alert")
-            alert = models.Alert(id=aid, product_id=product_id, warehouse_id=warehouse_id,
-                                  current_quantity=quantity, threshold_value=threshold.min_quantity,
-                                  status="ACTIVE", created_at=_now())
-            self.store.add_alert(alert)
-            return True
+    def _idem_lookup(self, key):
+        if not key:
+            return None
+        row = self.conn.execute(
+            "SELECT response_body FROM idempotency_keys WHERE key=?", (key,)
+        ).fetchone()
+        return json.loads(row["response_body"]) if row else None
+
+    def _idem_store(self, key, endpoint, response, status_code):
+        if not key:
+            return
+        self.conn.execute(
+            "INSERT OR REPLACE INTO idempotency_keys(key,endpoint,request_hash,response_body,"
+            "status_code,created_at) VALUES(?,?,?,?,?,?)",
+            (key, endpoint, "", json.dumps(response), status_code, db.now()),
+        )
+
+    def adjust_stock(self, warehouse_id, product_id, change_type, amount, reason=None,
+                      actor="system", idempotency_key=None):
+        cached = self._idem_lookup(idempotency_key)
+        if cached is not None:
+            return cached
+        if amount is None or not isinstance(amount, (int, float)):
+            raise ServiceError("amount is required and must be numeric")
+        row = self.conn.execute(
+            "SELECT * FROM stock_levels WHERE warehouse_id=? AND product_id=?",
+            (warehouse_id, product_id),
+        ).fetchone()
+        if not row:
+            raise ServiceError("stock record not found", 404)
+        qty_before = row["quantity"]
+        version = row["version"]
+        ct = (change_type or "").upper()
+        if ct == "INCREMENT":
+            qty_after, delta = qty_before + amount, amount
+        elif ct == "DECREMENT":
+            qty_after, delta = qty_before - amount, -amount
+        elif ct == "SET":
+            qty_after, delta = amount, amount - qty_before
         else:
-            if active:
-                active.status = "RESOLVED"
-                active.resolved_at = _now()
-                active.resolved_by = "system"
-            return False
-
-    # Thresholds
-    def set_threshold(self, product_id, warehouse_id, min_quantity):
-        self.get_product(product_id)
-        if warehouse_id is not None:
-            self.get_warehouse(warehouse_id)
-        if min_quantity < 0:
-            raise ValidationError("min_quantity cannot be negative")
-        tid = self.store.next_id("threshold")
-        now = _now()
-        threshold = models.Threshold(id=tid, product_id=product_id, warehouse_id=warehouse_id,
-                                      min_quantity=min_quantity, created_at=now, updated_at=now)
-        return self.store.upsert_threshold(threshold)
-
-    # Alerts
-    def list_alerts(self, page=1, page_size=20, status=None):
-        alerts = sorted(self.store.list_alerts(), key=lambda a: a.id)
-        if status:
-            alerts = [a for a in alerts if a.status == status]
-        total = len(alerts)
-        start = (page - 1) * page_size
-        end = start + page_size
-        return alerts[start:end], total
-
-    def resolve_alert(self, alert_id, resolved_by="user"):
-        alert = self.store.get_alert(alert_id)
-        if not alert:
-            raise NotFoundError("alert not found")
-        if alert.status == "RESOLVED":
-            raise ConflictError("alert already resolved")
-        alert.status = "RESOLVED"
-        alert.resolved_at = _now()
-        alert.resolved_by = resolved_by
-        return alert
+            raise ServiceError("invalid change_type; use INCREMENT/DECREMENT/SET")
+        if qty_after < 0:
+            raise ServiceError("adjustment would result in negative stock", 409)
+        cur = self.conn.execute(
+            "UPDATE stock_levels SET quantity=?, version=version+1, updated_at=? "
+            "WHERE warehouse_id=? AND product_id=? AND version=?",
+            (qty_after, db.now(), warehouse_id, product_id, version),
+        )
+        if cur.rowcount == 0:
+            raise ServiceError("concurrent modification detected, retry", 409)
+        adj_id = self._new_id("adj")
+        self.conn.execute(
+            "INSERT INTO stock_adjustments(id,warehouse_id,product_id,change_type,delta,"
+            "quantity_before,quantity_after,reason,actor,idempotency_key,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (adj_id, warehouse_id, product_id, ct, delta, qty_before, qty_after,
+             reason, actor, idempotency_key, db.now()),
+        )
+        threshold = row["threshold"]
+        if threshold is None:
+            threshold = self._default_threshold()
+        alert_triggered = False
+        if threshold is not None and qty_after <= threshold:
+            active = self.conn.execute(
+                "SELECT id FROM alerts WHERE warehouse_id=? AND product_id=? AND status='ACTIVE'",
+                (warehouse_id, product_id),
+            ).fetchone()
+            if not active:
+                aid = self._new_id("al")
+                self.conn.execute(
+                    "INSERT INTO alerts(id,warehouse_id,product_id,threshold,quantity_at_trigger,"
+                    "status,created_at,resolved_at) VALUES(?,?,?,?,?,'ACTIVE',?,NULL)",
+                    (aid, warehouse_id, product_id, threshold, qty_after, db.now()),
+                )
+            alert_triggered = True
+        else:
+            self.conn.execute(
+                "UPDATE alerts SET status='RESOLVED', resolved_at=? "
+                "WHERE warehouse_id=? AND product_id=? AND status='ACTIVE'",
+                (db.now(), warehouse_id, product_id),
+            )
+        response = {
+            "adjustment_id": adj_id,
+            "warehouse_id": warehouse_id,
+            "product_id": product_id,
+            "quantity_before": qty_before,
+            "quantity_after": qty_after,
+            "alert_triggered": alert_triggered,
+        }
+        self._idem_store(idempotency_key, "/v1/stock/adjustments", response, 201)
+        self.conn.commit()
+        return response

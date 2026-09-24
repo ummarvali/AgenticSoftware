@@ -2,59 +2,65 @@ openapi: 3.0.3
 info:
   title: Generated API
   version: 1.0.0
+  description: Endpoints implemented by the generated prototype slice.
 paths:
-  /products:
+  /v1/warehouses:
     post:
-      summary: Create a new product
+      summary: Create a warehouse
       responses:
         "201": { description: OK }
-  /products/{productId}:
+  /v1/warehouses:
     get:
-      summary: Get product details
+      summary: List warehouses
       responses:
         "200": { description: OK }
-  /warehouses:
+  /v1/products:
     post:
-      summary: Create a new warehouse
+      summary: Create a product/SKU
       responses:
         "201": { description: OK }
-  /warehouses/{warehouseId}:
+  /v1/products:
     get:
-      summary: Get warehouse details
+      summary: List products
       responses:
         "200": { description: OK }
-  /stock:
+  /v1/stock:
     post:
-      summary: Initialize or add stock for a product at a warehouse
+      summary: Add new stock (initial quantity) for a product/SKU at a warehouse
       responses:
         "201": { description: OK }
-  /stock/adjustments:
+  /v1/stock/adjustments:
     post:
-      summary: Adjust stock quantity (increment/decrement) with reason, recorded as immutable audit entry; triggers alert evaluation
-      responses:
-        "201": { description: OK }
-  /stock:
-    get:
-      summary: Query current stock levels, optionally filtered by warehouse_id and/or product_id, paginated
+      summary: Adjust stock (increment/decrement/set) with reason; idempotent via Idempotency-Key header
       responses:
         "200": { description: OK }
-  /stock/{warehouseId}/{productId}:
+  /v1/stock/{warehouse_id}/{product_id}:
     get:
-      summary: Get current stock level for a specific product in a specific warehouse
+      summary: Get current stock level for a product at a specific warehouse
       responses:
         "200": { description: OK }
-  /thresholds/{productId}/{warehouseId}:
+  /v1/products/{product_id}/stock:
+    get:
+      summary: Get stock levels for a product across all warehouses
+      responses:
+        "200": { description: OK }
+  /v1/warehouses/{warehouse_id}/stock:
+    get:
+      summary: List all products and their stock levels within a warehouse
+      responses:
+        "200": { description: OK }
+  /v1/thresholds/{warehouse_id}/{product_id}:
     put:
-      summary: Set or update the low-stock alert threshold for a product-warehouse pair (warehouseId can be 'default' for global threshold)
+      summary: Set or update low-stock threshold for a product-warehouse pair
       responses:
         "200": { description: OK }
-  /alerts:
+  /v1/alerts:
     get:
-      summary: List alerts, optionally filtered by status, warehouse, or product
+      summary: List currently active low-stock alerts
       responses:
         "200": { description: OK }
-  /alerts/{alertId}/resolve:
-    post:
-      summary: Manually resolve an active alert (e.g., after restock)
+  /v1/audit:
+    get:
+      summary: Query stock adjustment audit log, filterable by warehouse/product/date range
       responses:
         "200": { description: OK }

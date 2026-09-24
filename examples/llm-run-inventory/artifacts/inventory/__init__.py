@@ -1,5 +1,5 @@
 """Inventory service package."""
-from .service import InventoryService
-from .store import Store
+from .service import InventoryService, ServiceError
+from .server import create_server
 
-__all__ = ["InventoryService", "Store"]
+__all__ = ["InventoryService", "ServiceError", "create_server"]

@@ -25,14 +25,14 @@
 - SummaryWriter: summarize - consolidate the run into the final summary
 
 
-## API Contract
+## API Contract (design) and implementation coverage
 
-| Method | Path | Summary | Status |
-| --- | --- | --- | --- |
-| `POST` | `/api/shorten` | Create a short link | 201 |
-| `GET` | `/{code}` | Redirect to the long URL | 302 |
-| `GET` | `/api/stats/{code}` | Click analytics for a code | 200 |
-| `GET` | `/healthz` | Liveness probe | 200 |
+| Method | Path | Summary | Status | In generated slice |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/shorten` | Create a short link | 201 | yes |
+| `GET` | `/{code}` | Redirect to the long URL | 302 | yes |
+| `GET` | `/api/stats/{code}` | Click analytics for a code | 200 | yes |
+| `GET` | `/healthz` | Liveness probe | 200 | yes |
 
 ## Generated Artifacts
 - url_shortener/__init__.py
@@ -57,7 +57,7 @@
 | Check | Result | Detail |
 | --- | --- | --- |
 | code compiles | PASS | all files compiled |
-| tests pass | PASS | Ran 20 tests in 0.002s  OK |
+| tests pass | PASS | Ran 20 tests in 0.003s — OK |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
 | static safety scan | PASS | no findings |
@@ -82,11 +82,8 @@ Approach:
 - human_gates_passed_before_summary: 2
 
 ## Risks
-- In-memory store is fastest but non-durable; SQLite adds durability at I/O cost.
-- Sequential-id base62 codes are predictable; a hash/random scheme trades guessability for a small collision-handling cost.
-- Synchronous click recording is simplest; high write volume would move analytics to an async event pipeline.
-- Prototype persistence defaults to in-memory; data is lost on restart unless the SQLite backend is selected.
-- No authentication/rate limiting on link creation by default (abuse risk).
+- Persistence is SQLite (single file, single node); a multi-node deployment needs an external database.
+- No authentication or rate limiting on write endpoints by default (abuse risk).
 - Generated tests cover core paths; add load/security tests before production.
 
 ## Trade-offs

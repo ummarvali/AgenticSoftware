@@ -59,26 +59,35 @@ Validation : 5/5 checks passed (PASS)
 
 ---
 
-## 4. Live model — `examples/llm-run/` (recorded)
+## 4. Live model — `examples/llm-run*/` (recorded)
 
-The same greenfield requirement, run with `--provider openai` against a real model
-(see the README for the free Gemini setup). This folder is a **snapshot of an actual
-run**, checked in so the model-driven path can be inspected without any API key:
+Three runs of the same pipeline driven by a real model (`--provider claude`), checked in as
+**snapshots of actual runs** so the model-driven path can be inspected without any API key:
+
+| Folder | Requirement | What it demonstrates |
+| --- | --- | --- |
+| `llm-run/` | the mandatory URL shortener | model-authored, SQLite-backed service with its own tests; design↔implementation coverage table |
+| `llm-run-inventory/` | inventory service with low-stock alerts | a different domain through the same agents, gates and validator |
+| `llm-run-go-card-validator/` | a **Go** microservice validating card transactions | non-Python target: the design records Go, the validated slice is Python (stated as a limitation); the first bundle failed its own tests in the sandbox and the **codegen repair pass** fixed it — see the `codegen` retry entry in `metrics.llm.calls` |
+
+In each folder:
 
 - `result.json` → `metrics.llm`: per-stage calls (`analyze`, `decompose`, `design`,
-  `codegen`), prompt/completion tokens, latency, estimated cost, and whether any stage
-  fell back to the deterministic engine and why.
-- `artifacts/` → the project the model authored, which passed the sandbox compile+test
-  gate before being accepted (or, if `metrics.llm` shows a `codegen` fallback, the
-  verified template that replaced it — the record is honest either way).
-- The model typically plans a **richer DAG** (20+ tasks, 10+ levels) than the offline
-  engine's 6. Watch the agents handle it: the first `design`/`code`/`tests`/`docs` task
-  does the work; later ones log a `reuse` decision (`reused=N` in the monitoring line),
-  so the artifact set stays at 15 unique files and every task still completes.
-- Compare with a deterministic run of the same input: same gates, same validator —
-  different brain, different plan.
+  `codegen`), prompt/completion tokens, latency, estimated cost, retries, and whether any
+  stage fell back to the deterministic engine and why.
+- `artifacts/` → the project the model authored, accepted only after the sandbox
+  compile+test gate (a rejected bundle gets one repair pass with the sandbox output; if
+  `metrics.llm` shows a `codegen` fallback, the verified template replaced it — the record is
+  honest either way).
+- `artifacts/ENGINEERING_SUMMARY.md` → plan, rationale (design decisions + the agents'
+  decision log), **design ↔ implementation coverage**, validation, risks derived from the
+  produced slice, the model's trade-offs (prototype vs production), assumptions, limitations.
+- The model plans a **richer DAG** (20–30 tasks, 10+ levels) than the offline engine's 6.
+  The first `design`/`code`/`tests`/`docs` task does the work; later ones log a `reuse`
+  decision (`reused=N` in the monitoring line), so every task completes without duplicate
+  artifacts.
 
-Refresh it with `python scripts/snapshot_run.py --name llm-run` after your own run.
+Refresh a folder after your own run: `python scripts/snapshot_run.py --name <folder>`.
 
 ## Demonstrating error handling & recovery
 

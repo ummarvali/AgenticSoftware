@@ -1,6 +1,6 @@
 # Generated Service
 
-A high-throughput URL shortening service that generates unique short codes for long URLs, persists mappings durably, redirects users at scale, and asynchronously captures click analytics (timestamp, referrer, geo, device) without blocking the redirect path. The system is split into a stateless API/redirect tier, a persistent key-value store for mappings, a distributed ID/code generator, an async analytics pipeline backed by a message queue and time-series/OLAP store, and a caching layer to absorb read-heavy traffic.
+A URL shortening service exposing REST APIs to create, redirect, manage, and analyze short URLs. The prototype is a single Python process using only the standard library (http.server) with SQLite for durable storage of URL mappings, click events, and users/API keys, plus an in-memory LRU cache for hot redirect lookups. The production target architecture uses a NoSQL key-value store for mappings, a dedicated time-series/columnar analytics store, a distributed cache, and async event ingestion for analytics, enabling horizontal scaling and sub-100ms redirects.
 
 ## Tests
 

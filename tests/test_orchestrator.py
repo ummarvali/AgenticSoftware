@@ -194,12 +194,59 @@ class EngineeringSummaryTests(unittest.TestCase):
             self.assertTrue(all(c["passed"] for c in s.validation_checks))
             self.assertGreaterEqual(len(s.validation_approach), 5)
             self.assertTrue(s.risks and s.tradeoffs and s.assumptions and s.limitations)
+            # risks are derived from the produced slice, never a copy of the design trade-offs
+            self.assertFalse(set(s.risks) & set(s.tradeoffs))
+            self.assertTrue(any("SQLite" in r for r in s.risks))   # the shortener slice chose SQLite
+            detail = next(c["detail"] for c in s.validation_checks if c["name"] == "tests pass")
+            self.assertRegex(detail, r"^Ran \d+ tests in [\d.]+s — OK$")
             self.assertEqual(s.monitoring["provider"], "deterministic")
             md = next(a.content for a in result.artifacts if a.path == "ENGINEERING_SUMMARY.md")
             for heading in ("## Implementation Plan", "## Rationale", "## Generated Artifacts",
                             "## Validation", "## Run Monitoring", "## Risks", "## Trade-offs",
                             "## Assumptions", "## Limitations"):
                 self.assertIn(heading, md)
+
+
+class DesignImplementationCoherenceTests(unittest.TestCase):
+    """The summary must say where the validated slice is narrower than the design."""
+
+    def test_template_run_reports_full_endpoint_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Orchestrator(_config(tmp)).run(
+                "Build a scalable URL shortener service with APIs, persistence, and analytics.")
+            self.assertFalse([l for l in r.summary.limitations if "Design" in l and "implementation" in l])
+            md = next(a.content for a in r.artifacts if a.path == "ENGINEERING_SUMMARY.md")
+            self.assertIn("| yes |", md)
+            self.assertNotIn("design-only |", md)
+
+    def test_non_python_target_is_stated_and_design_only_endpoints_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Orchestrator(_config(tmp)).run("Build a Go microservice that validates card transactions.")
+            lim = " ".join(r.summary.limitations)
+            self.assertIn("non-Python target", lim)
+            self.assertIn("Design", lim)            # coverage line present (generic scaffold has no HTTP layer)
+            # no domain-specific leakage in standing risks
+            self.assertFalse(any("link creation" in x or "SQLite backend is selected" in x for x in r.summary.risks))
+
+    def test_docs_stage_runs_once_even_if_it_yields_nothing(self):
+        from agentic_sdlc.llm.deterministic import DeterministicProvider
+        class NoDocs(DeterministicProvider):
+            def generate_docs(self, analysis, architecture):
+                return []
+        class TwoDocTasks(NoDocs):
+            def decompose(self, analysis):
+                g = super().decompose(analysis)
+                g.tasks.append(Task("docs2", "More docs", "", depends_on=["design"], category="docs"))
+                for t in g.tasks:
+                    if t.id == "validate":
+                        t.depends_on.append("docs2")
+                return g
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Orchestrator(_config(tmp), provider=TwoDocTasks()).run(
+                "Build a scalable URL shortener service with APIs, persistence, and analytics.")
+            decisions = [e for e in r.events if e["kind"] == "decision" and e.get("agent") == "DocGenerator"]
+            self.assertEqual([d["action"] for d in decisions], ["generate-docs", "defer"])
+            self.assertTrue(r.validation.passed)   # Repair synthesizes README; contract from implemented endpoints
 
 
 if __name__ == "__main__":

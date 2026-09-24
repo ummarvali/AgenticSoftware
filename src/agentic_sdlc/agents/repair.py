@@ -45,7 +45,11 @@ class RepairAgent(Agent):
 
     def _add_contract(self, ctx: AgentContext) -> None:
         bb = ctx.blackboard
-        endpoints = bb.architecture.api if bb.architecture else []
+        implemented, design_only = bb.endpoint_coverage()
+        # Document what the code actually serves; never promise design-only endpoints.
+        endpoints = implemented or (bb.architecture.api if bb.architecture else [])
+        note = (f"  # {len(design_only)} design-level endpoint(s) not in this slice: "
+                + ", ".join(e.path for e in design_only) + "\n") if implemented and design_only else ""
         paths = "\n".join(
             f"  {e.path}:\n    {e.method.lower()}:\n"
             f"      summary: {e.summary}\n"
@@ -54,7 +58,8 @@ class RepairAgent(Agent):
         ) or "  {}"
         content = ("openapi: 3.0.3\n"
                    "info:\n  title: Generated API\n  version: 1.0.0\n"
-                   "paths:\n" + paths + "\n")
+                   "  description: Endpoints implemented by the generated prototype slice.\n"
+                   "paths:\n" + note + paths + "\n")
         artifact = Artifact("openapi.yaml", content, "contract")
         bb.merge(bb.code, [artifact])
         ctx.tools.artifacts.write(artifact)

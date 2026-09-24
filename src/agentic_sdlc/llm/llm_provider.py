@@ -72,14 +72,39 @@ def _to_int(value, default: int) -> int:
     return int(m.group()) if m else default
 
 
-# Output budget per stage. Reasoning stages are small; authoring a whole project is not.
-_MAX_TOKENS = {"analyze": 4096, "decompose": 4096, "design": 4096, "codegen": 32000}
-# Wall-clock budget per stage. Authoring a project streams for minutes; reasoning does not.
-_TIMEOUTS = {"codegen": 900.0}
+# Output CEILINGS per stage — not budgets. A ceiling costs nothing (you pay for tokens the
+# model generates, not for the room it is allowed), so they are set at the model's real
+# capacity. Models that reason before answering consume part of this room, and a legitimate
+# run must never be cut off by it. Anything above 8192 streams (see client.py); a model that
+# rejects a ceiling as too large is retried with a smaller one (client._call_with_ceiling).
+_MAX_TOKENS = {"analyze": 16000, "decompose": 32000, "design": 32000, "codegen": 64000}
+# Wall-clock ceilings per stage, generous for the same reason. Streaming keeps the connection
+# alive, so these only catch a genuinely hung request.
+_TIMEOUTS = {"analyze": 300.0, "decompose": 600.0, "design": 600.0, "codegen": 1800.0}
+
+
+def _analysis_context(analysis: AnalysisResult) -> str:
+    """The same context every downstream stage sees, so the design honours the analyst's
+    assumptions and the code honours the design — stages are stateless calls, so nothing
+    is shared unless it is passed explicitly."""
+
+    frs = "\n".join(f"  - {f}" for f in analysis.functional_requirements) or "  - (none stated)"
+    nfrs = "\n".join(f"  - {n}" for n in analysis.non_functional_requirements) or "  - (none stated)"
+    assumptions = "\n".join(
+        f"  - {a.question} -> ASSUME: {a.default_assumption}" for a in analysis.ambiguities
+    ) or "  - (none)"
+    return (
+        f"Problem:\n{analysis.normalized_problem or analysis.intent}\n\n"
+        f"Functional requirements:\n{frs}\n\n"
+        f"Non-functional requirements:\n{nfrs}\n\n"
+        f"Default assumptions already agreed (honour them; do not re-open them):\n{assumptions}\n"
+    )
 
 
 def _coerce_json(text: str) -> dict:
-    """Parse JSON from a model reply, tolerating code fences or surrounding prose."""
+    """Parse JSON from a model reply, tolerating code fences, surrounding prose, and
+    raw control characters inside strings (``strict=False``: models emitting source
+    code — Go, Makefiles, YAML — often leave literal tabs/newlines unescaped)."""
     s = text.strip()
     if s.startswith("```"):
         parts = s.split("```")
@@ -87,11 +112,11 @@ def _coerce_json(text: str) -> dict:
         if s.lstrip().lower().startswith("json"):
             s = s.lstrip()[4:]
     try:
-        return json.loads(s)
+        return json.loads(s, strict=False)
     except Exception:
         start, end = s.find("{"), s.rfind("}")
         if start != -1 and end > start:
-            return json.loads(s[start:end + 1])
+            return json.loads(s[start:end + 1], strict=False)
         raise
 
 
@@ -108,8 +133,8 @@ class LLMProvider(ReasoningProvider):
         self,
         client: LLMClient,
         *,
-        timeout: float = 120.0,
-        max_retries: int = 2,
+        timeout: float = 300.0,
+        max_retries: int = 3,
         backoff_s: float = 0.0,
         enable_codegen: bool = True,
         metrics: MetricsCollector | None = None,
@@ -128,13 +153,15 @@ class LLMProvider(ReasoningProvider):
         self._fallback = fallback or DeterministicProvider()
         self._bundle: dict[str, list[Artifact]] | None = None
         self._bundle_failed = False
-        # Spend guardrail: once either budget is exhausted, every further stage
-        # degrades to the deterministic engine instead of calling the model. A
-        # runaway plan can therefore cost at most the budget, never more.
+        # Circuit breaker, not a budget: a legitimate run makes 4-8 calls and costs cents,
+        # so these defaults sit far above normal and trip only on something abnormal — a
+        # runaway plan, a retry storm, or a hostile prompt engineered to burn tokens. Once
+        # tripped, remaining stages degrade to the deterministic engine and the record
+        # says so. Tune per environment with the env vars.
         self._max_calls = max_calls if max_calls is not None else int(
-            os.environ.get("AGENTIC_LLM_MAX_CALLS", "40"))
+            os.environ.get("AGENTIC_LLM_MAX_CALLS", "200"))
         self._max_cost_usd = max_cost_usd if max_cost_usd is not None else float(
-            os.environ.get("AGENTIC_LLM_MAX_COST_USD", "1.00"))
+            os.environ.get("AGENTIC_LLM_MAX_COST_USD", "10.00"))
         # code/docs generators may run concurrently in one DAG level; the model must
         # author the project exactly once, so the bundle is built under a lock.
         self._bundle_lock = threading.Lock()
@@ -244,7 +271,7 @@ class LLMProvider(ReasoningProvider):
     def design(self, analysis: AnalysisResult) -> Architecture:
         def llm() -> Architecture:
             system = load_prompt("design")
-            data = self._ask_json("design", system, analysis.normalized_problem or analysis.intent)
+            data = self._ask_json("design", system, _analysis_context(analysis))
             arch = Architecture(
                 overview=data.get("overview", ""),
                 components=list(data.get("components", [])),
@@ -311,8 +338,20 @@ class LLMProvider(ReasoningProvider):
             files = self._llm_generate_files(analysis, architecture)
             if not files or not any(f.path.startswith("tests/") for f in files):
                 raise ValueError("bundle missing a tests/ suite")
-            if not self._validate_bundle(files):
-                raise ValueError("generated project failed sandbox compile/tests")
+            ok, output = self._validate_bundle(files)
+            if not ok:
+                # Bounded feedback loop (one pass): the sandbox result goes back to the
+                # model as a repair brief. Recorded as a retry, not a fallback.
+                self.metrics.record(CallRecord(
+                    "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
+                    error="sandbox rejected bundle; repair pass: " + output[-160:].replace("\n", " "),
+                ))
+                files = self._llm_repair_files(analysis, architecture, files, output)
+                if not files or not any(f.path.startswith("tests/") for f in files):
+                    raise ValueError("repaired bundle missing a tests/ suite")
+                ok, output = self._validate_bundle(files)
+                if not ok:
+                    raise ValueError("generated project failed sandbox compile/tests after one repair pass")
             self._bundle = {
                 "code": [f for f in files
                          if not f.path.startswith("tests/") and f.kind != "docs"],
@@ -332,7 +371,7 @@ class LLMProvider(ReasoningProvider):
         api = "\n".join(f"  {e.method} {e.path} -> {e.response}" for e in architecture.api)
         system = load_prompt("codegen")
         user = (
-            f"Requirement:\n{analysis.normalized_problem or analysis.intent}\n\n"
+            _analysis_context(analysis) + "\n"
             f"Architecture overview: {architecture.overview}\n"
             f"Components: {', '.join(architecture.components)}\n"
             f"Data model: {', '.join(architecture.data_model)}\n"
@@ -347,6 +386,29 @@ class LLMProvider(ReasoningProvider):
                 files.append(Artifact(path, content, self._infer_kind(path)))
         return files
 
+    def _llm_repair_files(
+        self, analysis: AnalysisResult, architecture: Architecture,
+        files: list[Artifact], sandbox_output: str,
+    ) -> list[Artifact]:
+        """One repair pass: previous bundle + sandbox result -> corrected bundle."""
+        api = "\n".join(f"  {e.method} {e.path} -> {e.response}" for e in architecture.api)
+        listing = "\n\n".join(f"### {f.path}\n{f.content}" for f in files)
+        user = (
+            _analysis_context(analysis) + "\n"
+            f"Architecture overview: {architecture.overview}\n"
+            f"API:\n{api}\n\n"
+            f"PREVIOUS BUNDLE:\n{listing}\n\n"
+            f"SANDBOX OUTPUT (compile errors / unittest result):\n{sandbox_output[-4000:]}"
+        )
+        data = self._ask_json("codegen", load_prompt("codegen_repair"), user)
+        repaired: list[Artifact] = []
+        for f in data.get("files", []):
+            path = str(f.get("path", "")).strip()
+            content = f.get("content", "")
+            if path and content:
+                repaired.append(Artifact(path, content, self._infer_kind(path)))
+        return repaired
+
     @staticmethod
     def _infer_kind(path: str) -> str:
         if path.startswith("tests/"):
@@ -357,8 +419,10 @@ class LLMProvider(ReasoningProvider):
             return "contract"
         return "code"
 
-    def _validate_bundle(self, files: list[Artifact]) -> bool:
-        """Write the bundle to a temp dir, compile it, and run its tests."""
+    def _validate_bundle(self, files: list[Artifact]) -> tuple[bool, str]:
+        """Write the bundle to a temp dir, compile it, and run its tests.
+
+        Returns (ok, output) so a rejection can be fed back to the model."""
 
         import tempfile
         from pathlib import Path
@@ -370,6 +434,8 @@ class LLMProvider(ReasoningProvider):
             store.write_all(files)
             runner = CodeRunner()
             py = [Path(tmp) / f.path for f in files if f.path.endswith(".py")]
-            if any(not r.ok for r in runner.compile_python(py)):
-                return False
-            return runner.run_unittests(Path(tmp)).ok
+            failed = [r for r in runner.compile_python(py) if not r.ok]
+            if failed:
+                return False, "\n".join(f"{r.path}: {r.error}" for r in failed)
+            result = runner.run_unittests(Path(tmp))
+            return result.ok, result.output

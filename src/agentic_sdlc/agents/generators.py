@@ -83,12 +83,19 @@ class DocGeneratorAgent(Agent):
     category = "docs"
 
     def perceive(self, ctx: AgentContext, task: Task) -> dict[str, Any]:
-        return {"already_generated": bool(ctx.blackboard.docs), "task": task.id}
+        return {"already_generated": bool(ctx.blackboard.docs),
+                "attempted": ctx.blackboard.docs_attempted, "task": task.id}
 
     def decide(self, ctx: AgentContext, obs: dict[str, Any]) -> AgentDecision:
         if obs["already_generated"]:
             return AgentDecision(
                 "reuse", f"documentation already generated; '{obs['task']}' is covered by it",
+                proceed=False,
+            )
+        if obs["attempted"]:
+            return AgentDecision(
+                "defer", "docs stage already ran and produced nothing; the Repair agent "
+                         "synthesizes docs from the design after validation",
                 proceed=False,
             )
         return AgentDecision("generate-docs", "generate README and architecture docs")
@@ -97,6 +104,7 @@ class DocGeneratorAgent(Agent):
         bb = ctx.blackboard
         assert bb.analysis is not None and bb.architecture is not None
         artifacts = ctx.provider.generate_docs(bb.analysis, bb.architecture)
+        bb.docs_attempted = True
         artifacts = bb.merge(bb.docs, artifacts)
         ctx.tools.artifacts.write_all(artifacts)
         bb.log("docs", f"generated {len(artifacts)} documentation files",

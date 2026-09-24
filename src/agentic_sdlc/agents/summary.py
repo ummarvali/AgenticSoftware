@@ -56,13 +56,14 @@ class SummaryAgent(Agent):
                 "re-validated (bounded); compile failures halt for human attention.",
                 "Human: a final acceptance gate reviews this report before the run is accepted.",
             ] + (["Model output: LLM-authored code was accepted only after passing a "
-                  "sandbox compile+test gate; otherwise the verified template was used."]
+                  "sandbox compile+test gate (a rejected bundle gets one repair pass with "
+                  "the sandbox output); otherwise the verified template was used."]
                  if provider == "llm" else []),
             validation_checks=[{"name": c.name, "passed": c.passed, "detail": c.detail}
                                for c in (bb.validation.checks if bb.validation else [])],
             monitoring=self._monitoring(bb, provider, llm_metrics),
             assumptions=list(bb.assumptions),
-            limitations=self._limitations(provider, llm_metrics),
+            limitations=self._limitations(provider, llm_metrics) + self._scope_limitations(bb),
         )
         bb.summary = summary
 
@@ -111,6 +112,30 @@ class SummaryAgent(Agent):
         return m
 
     @staticmethod
+    def _scope_limitations(bb) -> list[str]:
+        """State plainly where the validated slice is narrower than the design."""
+
+        out: list[str] = []
+        implemented, design_only = bb.endpoint_coverage()
+        if design_only:
+            out.append(
+                f"Design ↔ implementation: {len(implemented)}/{len(implemented) + len(design_only)} "
+                f"designed endpoints are served by the generated slice; design-only: "
+                + ", ".join(e.path for e in design_only) + "."
+            )
+        low = bb.requirement.text.lower()
+        for lang in ("golang", " go ", "java", "kotlin", "typescript", "node", "rust", "c#", ".net", "c++"):
+            if lang in f" {low} ":
+                out.append(
+                    "The requirement names a non-Python target; the design records that target, "
+                    "but the validated prototype slice is Python (standard library) because that is "
+                    "what the compile+test gate can execute. Other languages need a runner + prompt "
+                    "(`CodeRunner`, `prompts/codegen.md`)."
+                )
+                break
+        return out
+
+    @staticmethod
     def _limitations(provider: str, llm) -> list[str]:
         common = [
             "Generated service targets clarity and the standard library over "
@@ -136,13 +161,16 @@ class SummaryAgent(Agent):
 
         api_rows = ""
         if bb.architecture and bb.architecture.api:
+            implemented, design_only = bb.endpoint_coverage()
+            impl = {id(e) for e in implemented}
             api_rows = "\n".join(
-                f"| `{e.method}` | `{e.path}` | {e.summary} | {e.status} |"
+                f"| `{e.method}` | `{e.path}` | {e.summary} | {e.status} | "
+                f"{'yes' if id(e) in impl else 'design-only'} |"
                 for e in bb.architecture.api
             )
-            api_rows = ("\n\n## API Contract\n\n"
-                        "| Method | Path | Summary | Status |\n"
-                        "| --- | --- | --- | --- |\n" + api_rows)
+            api_rows = ("\n\n## API Contract (design) and implementation coverage\n\n"
+                        "| Method | Path | Summary | Status | In generated slice |\n"
+                        "| --- | --- | --- | --- | --- |\n" + api_rows)
 
         checks = "\n".join(
             f"| {c['name']} | {'PASS' if c['passed'] else 'FAIL'} | "

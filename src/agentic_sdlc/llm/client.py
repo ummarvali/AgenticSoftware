@@ -63,6 +63,27 @@ def _temperature(default: float | None) -> float | None:
     return None if raw.strip().lower() in ("", "none", "default") else float(raw)
 
 
+_CEILING_FALLBACKS = (32000, 16000, 8192, 4096)
+
+
+def _call_with_ceiling(fn, kwargs: dict):
+    """Invoke an SDK method; if the API rejects ``max_tokens`` as above the model's
+    maximum, retry with the next smaller ceiling. A ceiling is a safety limit, never a
+    reason for a stage to fail."""
+
+    while True:
+        try:
+            return _call(fn, kwargs)
+        except Exception as exc:  # noqa: BLE001 - only max_tokens rejections are handled
+            msg = str(exc).lower()
+            current = int(kwargs.get("max_tokens", 0) or 0)
+            smaller = [c for c in _CEILING_FALLBACKS if c < current]
+            if "max_tokens" in msg and smaller and any(w in msg for w in ("maximum", "exceed", "invalid", "too large", "at most")):
+                kwargs = {**kwargs, "max_tokens": smaller[0]}
+                continue
+            raise
+
+
 def _call(fn, kwargs: dict, *, optional: tuple[str, ...] = ("temperature",)):
     """Invoke an SDK method, dropping optional sampling parameters the installed SDK or
     the selected model rejects, instead of failing the whole stage over a knob."""
@@ -189,7 +210,7 @@ class OpenAIClient:
             kwargs["temperature"] = temp
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        resp = _call(self._client.chat.completions.create, kwargs)
+        resp = _call_with_ceiling(self._client.chat.completions.create, kwargs)
         usage = getattr(resp, "usage", None)
         if getattr(resp.choices[0], "finish_reason", "") == "length":
             raise RuntimeError(f"model output truncated at max_tokens={max_tokens}")
@@ -245,12 +266,12 @@ class AnthropicClient:
             # Long outputs (a whole project) can take several minutes to generate. Streaming
             # keeps the connection alive token by token instead of waiting on one response,
             # which is what the Anthropic SDK requires for long non-interactive generations.
-            with _call(self._client.messages.stream, kwargs) as stream:
+            with _call_with_ceiling(self._client.messages.stream, kwargs) as stream:
                 for _ in stream.text_stream:
                     pass
                 resp = stream.get_final_message()
         else:
-            resp = _call(self._client.messages.create, kwargs)
+            resp = _call_with_ceiling(self._client.messages.create, kwargs)
         # Concatenate every text block (thinking blocks have no .text and are skipped).
         text = "".join(getattr(b, "text", "") or "" for b in (resp.content or []))
         if getattr(resp, "stop_reason", "") == "max_tokens":

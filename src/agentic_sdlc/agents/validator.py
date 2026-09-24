@@ -61,7 +61,7 @@ class ValidatorAgent(Agent):
         checks.append(Check(
             "tests pass",
             test_result.ok,
-            self._tail(test_result.output),
+            self._test_detail(test_result.output),
         ))
 
         # 3) Contract present when the design exposes an API.
@@ -103,16 +103,48 @@ class ValidatorAgent(Agent):
             raise RuntimeError(f"generated code failed to compile: {failed[0].error}")
 
     @staticmethod
+    def _test_detail(output: str) -> str:
+        """The unittest verdict ("Ran N tests ... OK"), with interpreter warnings
+        emitted by the generated suite counted rather than pasted; on failure the
+        tail of the output (the failure text) is kept."""
+        lines = [l.strip() for l in output.strip().splitlines() if l.strip()]
+        ran = next((l for l in lines if l.startswith("Ran ")), "")
+        verdict = next((l for l in reversed(lines) if l.startswith(("OK", "FAILED"))), "")
+        if not (ran and verdict and verdict.startswith("OK")):
+            return ValidatorAgent._tail(output)
+        warnings = sum(1 for l in lines if "Warning:" in l)
+        note = f" ({warnings} interpreter warning(s) emitted by the generated tests)" if warnings else ""
+        return f"{ran} — {verdict}{note}"
+
+    @staticmethod
     def _tail(text: str, lines: int = 3) -> str:
         return "\n".join(text.strip().splitlines()[-lines:]) if text.strip() else ""
 
     @staticmethod
     def _risks(bb) -> list[str]:
-        risks = list(bb.architecture.tradeoffs) if bb.architecture else []
-        risks += [
-            "Prototype persistence defaults to in-memory; data is lost on restart "
-            "unless the SQLite backend is selected.",
-            "No authentication/rate limiting on link creation by default (abuse risk).",
+        """Standing risks of the generated slice, derived from what was actually
+        produced (not a copy of the design trade-offs, which the summary lists
+        separately)."""
+        code = "\n".join(a.content.lower() for a in bb.all_artifacts() if a.kind == "code")
+        durable = "sqlite" in code
+        has_auth = any(m in code for m in ("api_key", "apikey", "x-api-key", "authorization", "bearer"))
+        has_limit = any(m in code for m in ("rate_limit", "ratelimit", "token_bucket", "429"))
+        if has_auth and has_limit:
+            abuse = ("Authentication and rate limiting in the generated slice are in-process "
+                     "prototypes: state resets on restart and is not shared across instances.")
+        elif has_auth:
+            abuse = ("Authentication in the generated slice is an in-process prototype; "
+                     "rate limiting is not enforced on write endpoints.")
+        elif has_limit:
+            abuse = ("Rate limiting in the generated slice is in-process (resets on restart, "
+                     "not shared across instances); write endpoints are unauthenticated.")
+        else:
+            abuse = "No authentication or rate limiting on write endpoints by default (abuse risk)."
+        return [
+            ("Persistence is SQLite (single file, single node); a multi-node deployment "
+             "needs an external database." if durable else
+             "Prototype persistence is in-memory unless a durable backend is configured; "
+             "data is lost on restart."),
+            abuse,
             "Generated tests cover core paths; add load/security tests before production.",
         ]
-        return risks

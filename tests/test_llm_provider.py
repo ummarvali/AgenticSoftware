@@ -124,13 +124,27 @@ class LLMCodegenTests(unittest.TestCase):
         self.assertIn("tests/test_calc.py", paths)
         self.assertEqual(provider.metrics.fallbacks, 0)
 
-    def test_falls_back_to_verified_template_on_broken_code(self):
-        provider = _provider([_BROKEN_BUNDLE])
+    def test_sandbox_rejection_is_fed_back_and_repaired_bundle_is_accepted(self):
+        # first bundle fails the gate; the repair pass gets the sandbox output and fixes it
+        client = FakeClient([_BROKEN_BUNDLE, _VALID_BUNDLE])
+        provider = LLMProvider(client, max_retries=2, backoff_s=0.0, metrics=MetricsCollector())
+        analysis, architecture = self._prepare(provider)
+        code = provider.generate_code(analysis, architecture)
+        self.assertIn("pkg/calc.py", {a.path for a in code})       # model-authored, repaired
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(provider.metrics.fallbacks, 0)
+        retries = [c for c in provider.metrics.calls if c.stage == "codegen" and c.error and not c.fallback]
+        self.assertEqual(len(retries), 1)
+        self.assertIn("sandbox rejected bundle", retries[0].error)
+
+    def test_falls_back_to_verified_template_when_repair_also_fails(self):
+        provider = _provider([_BROKEN_BUNDLE, _BROKEN_BUNDLE])
         analysis, architecture = self._prepare(provider)
         code = provider.generate_code(analysis, architecture)
         paths = {a.path for a in code}
         self.assertIn("url_shortener/service.py", paths)  # verified template took over
         self.assertGreaterEqual(provider.metrics.fallbacks, 1)
+        self.assertIn("after one repair pass", provider.metrics.calls[-1].error)
 
 
 class GuardrailTests(unittest.TestCase):
@@ -199,6 +213,29 @@ class LenientParsingTests(unittest.TestCase):
         self.assertEqual([e.status for e in arch.api], [201, 302, 200])
         self.assertEqual(provider.metrics.fallbacks, 0)
 
+    def test_reasoning_stages_have_headroom_for_thinking_models(self):
+        from agentic_sdlc.llm.llm_provider import _MAX_TOKENS
+        self.assertGreaterEqual(_MAX_TOKENS["design"], 16000)
+        self.assertGreaterEqual(_MAX_TOKENS["decompose"], 16000)
+
+    def test_ceiling_rejected_by_model_is_shrunk_not_fatal(self):
+        from agentic_sdlc.llm.client import _call_with_ceiling
+        seen = []
+        def fake(**kw):
+            seen.append(kw["max_tokens"])
+            if kw["max_tokens"] > 8192:
+                raise RuntimeError("Error code: 400 - max_tokens: 64000 > 8192, which is the maximum allowed")
+            return "ok"
+        self.assertEqual(_call_with_ceiling(fake, {"model": "m", "max_tokens": 64000}), "ok")
+        self.assertEqual(seen, [64000, 32000, 16000, 8192])
+
+    def test_circuit_breaker_defaults_are_far_above_a_normal_run(self):
+        import os
+        os.environ.pop("AGENTIC_LLM_MAX_CALLS", None); os.environ.pop("AGENTIC_LLM_MAX_COST_USD", None)
+        p = LLMProvider(FakeClient([]), enable_codegen=False)
+        self.assertGreaterEqual(p._max_calls, 100)
+        self.assertGreaterEqual(p._max_cost_usd, 5.0)
+
     def test_codegen_gets_a_large_output_budget(self):
         provider = _provider([json.dumps({"files": []})])
         from agentic_sdlc.models import AnalysisResult, Architecture, RequirementKind
@@ -206,6 +243,14 @@ class LenientParsingTests(unittest.TestCase):
                                Architecture(overview="o", components=["c"]))
         self.assertGreaterEqual(provider._client.last_max_tokens, 32000)
         self.assertGreaterEqual(provider._client.last_timeout, 600)   # minutes, not seconds
+
+    def test_raw_tabs_and_newlines_inside_strings_are_tolerated(self):
+        # Go/Makefile sources carry literal tabs; strict JSON would reject them.
+        from agentic_sdlc.llm.llm_provider import _coerce_json
+        raw = '{"files": [{"path": "main.go", "content": "func main() {\n\tfmt.Println(1)\n}"}]}'
+        raw = raw.replace("\\n", "\n").replace("\\t", "\t")   # make them literal control chars
+        data = _coerce_json(raw)
+        self.assertIn("\t", data["files"][0]["content"])
 
     def test_non_json_reply_error_shows_what_came_back(self):
         provider = _provider(["Sure! Here is the design you asked for.", "still not json"])

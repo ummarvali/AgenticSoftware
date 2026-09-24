@@ -2,70 +2,77 @@
 
 **Requirement:** Build an inventory service with REST APIs to add, adjust and query stock levels per warehouse, with low-stock alerts.
 **Classification:** greenfield
-**Validation:** 4/4 checks passed
+**Validation:** 5/5 checks passed
 
 ## Implementation Plan
-- Level 0: design_1 (design)
-- Level 1: design_2 (design, reused), design_3 (design, reused)
-- Level 2: code_1 (code)
-- Level 3: code_2 (code, reused), code_3 (code, reused), code_4 (code, reused)
-- Level 4: code_5 (code, reused)
-- Level 5: code_6 (code, reused), tests_1 (tests)
-- Level 6: tests_2 (tests, reused), docs_1 (docs)
-- Level 7: validate_1 (validate)
-- Level 8: summary_1 (summary)
+- Level 0: design_arch (design)
+- Level 1: design_data_model (design, reused)
+- Level 2: design_alerting (design, reused), design_api_contract (design, reused), code_migrations (code)
+- Level 3: code_query_service (code, reused), code_stock_service (code, reused), docs_system_design (docs)
+- Level 4: code_alerting (code, reused), tests_unit_stock (tests)
+- Level 5: code_api_layer (code, reused), tests_unit_alerting (tests, reused)
+- Level 6: tests_integration_api (tests, reused), docs_api (docs, reused)
+- Level 7: validate_test_suite (validate)
+- Level 8: validate_concurrency_load (validate, reused)
+- Level 9: summary_report (summary)
 
 ## Rationale (key decisions & agent decision log)
-- Use PostgreSQL as the system of record for strong consistency on stock quantities, with optimistic locking (version column) to handle concurrent adjustments safely
-- Model all stock changes as immutable StockAdjustment records rather than mutating quantity directly, enabling full audit trail and reconciliation
-- Separate 'add stock' (POST /stock) from 'adjust stock' (POST /stock/adjustments) semantically, but both ultimately route through the adjustment engine internally for consistency
-- Evaluate thresholds synchronously within the adjustment transaction to guarantee no missed alerts, then publish AlertRaised events asynchronously for notification fan-out
-- Support per-warehouse thresholds with an optional global default threshold per product to reduce configuration overhead
-- Use Redis caching for GET /stock queries with short TTL and cache invalidation on adjustment to balance read performance and freshness
-- Include a scheduled reconciliation job as a safety net in case event-driven alerting misses due to failures
-- Persistence default: memory (no durability signal -> in-memory default is sufficient for the prototype).
-- Architect: design(in-memory) - no durability signal -> in-memory default is sufficient for the prototype
-- Architect: reuse - architecture already committed; 'design_2' is covered by it
-- Architect: reuse - architecture already committed; 'design_3' is covered by it
+- Target production architecture: horizontally scalable REST service in front of a relational database (e.g., PostgreSQL); prototype implements the identical API/domain logic using Python's standard library only (http.server) with SQLite for persistence
+- All stock mutations run inside a single SQLite transaction: read current quantity+version, validate, compute new quantity, write with WHERE version=? to implement optimistic locking; a version mismatch or negative-result check causes the transaction to abort with a 409/422
+- Negative stock is rejected by default: DECREMENT/SET operations that would drive quantity below zero return 422 Unprocessable Entity with no state change and no audit row
+- Idempotency for POST /v1/stock/adjustments is implemented via a required Idempotency-Key header stored in idempotency_keys; a retried key with matching request body returns the cached prior response instead of reprocessing
+- Threshold resolution order: per (warehouse_id, product_id) row value if set, else global_settings.default_low_stock_threshold, else no alerting for that pair
+- After every successful adjustment, the engine re-evaluates quantity vs resolved threshold: crossing at-or-below triggers a new ACTIVE alert row (if none open); rising back above threshold auto-resolves any open ACTIVE alert for that pair
+- Every stock-changing call writes exactly one row to stock_adjustments capturing actor, reason, change_type, delta, before/after quantities, and idempotency_key, providing the audit trail
+- Authentication implemented as a static api_keys table checked against an Authorization: Bearer <key> header on all write endpoints; read endpoints require a valid key but any role suffices, write endpoints require role='admin' or 'operator'
+- Input validation (types, required fields, enum values for change_type, non-negative quantities) is enforced in the handler layer before touching the database, returning 400 with field-level error messages
+- Observability implemented via Python's logging module emitting structured JSON log lines per request/adjustment/alert, plus an in-memory counters dict exposed at GET /v1/metrics for basic operational visibility
+- Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).
+- Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default
+- Architect: reuse - architecture already committed; 'design_data_model' is covered by it
+- Architect: reuse - architecture already committed; 'design_alerting' is covered by it
+- Architect: reuse - architecture already committed; 'design_api_contract' is covered by it
 - CodeGenerator: generate - no code yet → generate from the design
-- CodeGenerator: reuse - code already generated from the current design; 'code_2' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_3' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_4' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_5' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_6' is covered by it
-- TestGenerator: generate-tests - generate unit + integration tests for the code
-- TestGenerator: reuse - test suite already generated; 'tests_2' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_query_service' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_stock_service' is covered by it
 - DocGenerator: generate-docs - generate README and architecture docs
+- CodeGenerator: reuse - code already generated from the current design; 'code_alerting' is covered by it
+- TestGenerator: generate-tests - generate unit + integration tests for the code
+- CodeGenerator: reuse - code already generated from the current design; 'code_api_layer' is covered by it
+- TestGenerator: reuse - test suite already generated; 'tests_unit_alerting' is covered by it
+- TestGenerator: reuse - test suite already generated; 'tests_integration_api' is covered by it
+- DocGenerator: defer - docs stage already ran and produced nothing; the Repair agent synthesizes docs from the design after validation
 - Validator: validate - compile code, run tests, check contract & docs
+- Validator: reuse - artifact set unchanged since the last report; 'validate_concurrency_load' needs no re-run
 - SummaryWriter: summarize - consolidate the run into the final summary
 - Repair: repair - auto-fixing: api contract present, documentation present
 - Validator: validate - compile code, run tests, check contract & docs
 - SummaryWriter: summarize - consolidate the run into the final summary
 
 
-## API Contract
+## API Contract (design) and implementation coverage
 
-| Method | Path | Summary | Status |
-| --- | --- | --- | --- |
-| `POST` | `/products` | Create a new product | 201 |
-| `GET` | `/products/{productId}` | Get product details | 200 |
-| `POST` | `/warehouses` | Create a new warehouse | 201 |
-| `GET` | `/warehouses/{warehouseId}` | Get warehouse details | 200 |
-| `POST` | `/stock` | Initialize or add stock for a product at a warehouse | 201 |
-| `POST` | `/stock/adjustments` | Adjust stock quantity (increment/decrement) with reason, recorded as immutable audit entry; triggers alert evaluation | 201 |
-| `GET` | `/stock` | Query current stock levels, optionally filtered by warehouse_id and/or product_id, paginated | 200 |
-| `GET` | `/stock/{warehouseId}/{productId}` | Get current stock level for a specific product in a specific warehouse | 200 |
-| `PUT` | `/thresholds/{productId}/{warehouseId}` | Set or update the low-stock alert threshold for a product-warehouse pair (warehouseId can be 'default' for global threshold) | 200 |
-| `GET` | `/alerts` | List alerts, optionally filtered by status, warehouse, or product | 200 |
-| `POST` | `/alerts/{alertId}/resolve` | Manually resolve an active alert (e.g., after restock) | 200 |
+| Method | Path | Summary | Status | In generated slice |
+| --- | --- | --- | --- | --- |
+| `POST` | `/v1/warehouses` | Create a warehouse | 201 | yes |
+| `GET` | `/v1/warehouses` | List warehouses | 200 | yes |
+| `POST` | `/v1/products` | Create a product/SKU | 201 | yes |
+| `GET` | `/v1/products` | List products | 200 | yes |
+| `POST` | `/v1/stock` | Add new stock (initial quantity) for a product/SKU at a warehouse | 201 | yes |
+| `POST` | `/v1/stock/adjustments` | Adjust stock (increment/decrement/set) with reason; idempotent via Idempotency-Key header | 200 | yes |
+| `GET` | `/v1/stock/{warehouse_id}/{product_id}` | Get current stock level for a product at a specific warehouse | 200 | yes |
+| `GET` | `/v1/products/{product_id}/stock` | Get stock levels for a product across all warehouses | 200 | yes |
+| `GET` | `/v1/warehouses/{warehouse_id}/stock` | List all products and their stock levels within a warehouse | 200 | yes |
+| `PUT` | `/v1/thresholds/{warehouse_id}/{product_id}` | Set or update low-stock threshold for a product-warehouse pair | 200 | yes |
+| `GET` | `/v1/alerts` | List currently active low-stock alerts | 200 | yes |
+| `GET` | `/v1/audit` | Query stock adjustment audit log, filterable by warehouse/product/date range | 200 | yes |
 
 ## Generated Artifacts
 - inventory/__init__.py
-- inventory/models.py
-- inventory/store.py
+- inventory/db.py
 - inventory/service.py
 - inventory/api.py
-- server.py
+- inventory/server.py
 - openapi.yaml
 - tests/test_service.py
 - tests/test_api.py
@@ -73,65 +80,61 @@
 
 ## Validation
 
-**Result:** 4/4 checks passed
+**Result:** 5/5 checks passed
 
 | Check | Result | Detail |
 | --- | --- | --- |
 | code compiles | PASS | all files compiled |
-| tests pass | PASS | Ran 8 tests in 0.001s  OK |
+| tests pass | PASS | Ran 9 tests in 0.023s — OK (2 interpreter warning(s) emitted by the generated tests) |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
+| static safety scan | PASS | no findings |
 
 Approach:
 - Static: every generated .py file is compiled (py_compile).
 - Dynamic: the generated unit + integration suite is executed in a subprocess with a timeout and a credential-scrubbed environment.
 - Contract: an OpenAPI document must exist whenever the design exposes an API.
 - Documentation: README/architecture docs must be present.
+- Static safety: an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle), imports outside the standard library, and hard-coded secrets.
 - Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.
 - Human: a final acceptance gate reviews this report before the run is accepted.
-- Model output: LLM-authored code was accepted only after passing a sandbox compile+test gate; otherwise the verified template was used.
+- Model output: LLM-authored code was accepted only after passing a sandbox compile+test gate (a rejected bundle gets one repair pass with the sandbox output); otherwise the verified template was used.
 
 ## Run Monitoring
 - provider: llm
-- tasks_completed: 16
+- tasks_completed: 19
 - retries: 0
 - repairs: 1
 - degradations: 0
-- parallel_levels: 4
-- reused_tasks: 8
+- parallel_levels: 5
+- reused_tasks: 11
 - human_gates_passed_before_summary: 2
 - llm_calls: 4
-- llm_tokens: 35515
-- llm_est_cost_usd: 0.1017
+- llm_tokens: 37094
+- llm_est_cost_usd: 0.1007
 - llm_fallbacks: []
 
 ## Risks
-- Synchronous threshold evaluation on every adjustment adds latency to write path but guarantees alert correctness over pure eventual consistency
-- Storing every adjustment as an immutable record increases storage growth over time but provides auditability; mitigated via periodic archiving
-- Optimistic locking can cause adjustment retries under high write contention on the same stock item, trading some throughput for correctness without heavy locking
-- Caching stock reads improves query performance but introduces a small window of staleness between a write and cache invalidation
-- Global vs per-warehouse thresholds add query complexity (fallback resolution logic) but improve configuration flexibility for operators
-- Event bus dependency for notifications introduces an additional operational component and potential delivery delay, but decouples alerting from core transactional path
-- Prototype persistence defaults to in-memory; data is lost on restart unless the SQLite backend is selected.
-- No authentication/rate limiting on link creation by default (abuse risk).
+- Persistence is SQLite (single file, single node); a multi-node deployment needs an external database.
+- Authentication in the generated slice is an in-process prototype; rate limiting is not enforced on write endpoints.
 - Generated tests cover core paths; add load/security tests before production.
 
 ## Trade-offs
-- Synchronous threshold evaluation on every adjustment adds latency to write path but guarantees alert correctness over pure eventual consistency
-- Storing every adjustment as an immutable record increases storage growth over time but provides auditability; mitigated via periodic archiving
-- Optimistic locking can cause adjustment retries under high write contention on the same stock item, trading some throughput for correctness without heavy locking
-- Caching stock reads improves query performance but introduces a small window of staleness between a write and cache invalidation
-- Global vs per-warehouse thresholds add query complexity (fallback resolution logic) but improve configuration flexibility for operators
-- Event bus dependency for notifications introduces an additional operational component and potential delivery delay, but decouples alerting from core transactional path
+- Prototype uses SQLite with a single writer connection and file-based WAL for consistency; production would use PostgreSQL with row-level locking or SERIALIZABLE transactions to support higher concurrent write throughput
+- Prototype runs as one single-threaded/multi-threaded process on one host; production would deploy multiple stateless API instances behind a load balancer, scaling horizontally against a shared, replicated database
+- Prototype exposes alerts only via a query API stored in the same database; production would additionally publish alert events to a message queue/webhook dispatcher for near-real-time external notification without polling
+- Prototype stores idempotency keys and audit logs in the same SQLite file as operational data; production would separate audit/event history into an append-only store or event log (e.g., a dedicated audit database or streaming platform) for scalability and long-term retention
+- Prototype uses simple static API keys held in a local table; production would integrate a proper identity provider (OAuth2/OIDC) with role-based access control and key rotation
+- Prototype computes metrics as in-process counters lost on restart; production would ship metrics to a dedicated monitoring/alerting stack (e.g., Prometheus/Grafana) with persistent time-series storage
 
 ## Assumptions
-- What defines a 'low-stock' threshold, and is it configurable per product, per warehouse, or both? -> assumed: Assume a configurable threshold per product-warehouse combination, with a system-wide default if not explicitly set.
-- How should low-stock alerts be delivered (webhook, email, message queue, in-app notification)? -> assumed: Assume alerts are published to an internal event/message queue and optionally exposed via a webhook callback.
-- Is authentication/authorization required, and what mechanism should be used? -> assumed: Assume simple API key-based authentication for all endpoints.
-- Should this service own product and warehouse master data, or integrate with existing catalog/warehouse management systems? -> assumed: Assume the service maintains minimal internal reference data for products and warehouses needed to support inventory tracking.
-- Should stock be allowed to go negative, or should adjustments be validated/rejected if they exceed available quantity? -> assumed: Assume stock cannot go negative; adjustments that would result in negative stock are rejected.
-- What is the expected scale (number of SKUs, warehouses, and request throughput)? -> assumed: Assume moderate scale: thousands of SKUs, tens of warehouses, and hundreds of requests per second.
-- Is multi-tenancy support required (multiple organizations using the same service instance)? -> assumed: Assume single-tenant deployment for now.
+- How should low-stock thresholds be defined — globally, per product, per warehouse, or per product-warehouse combination? -> assumed: Threshold is configurable per product per warehouse, with an optional global default fallback
+- How should low-stock alerts be delivered (webhook, email, push notification, or just an internal queryable alert state)? -> assumed: Alerts are stored internally and exposed via a query API; external delivery (webhook/email) is out of scope for initial version
+- Should the service manage product and warehouse master data itself, or does it assume these entities already exist in another system? -> assumed: The service will manage basic product and warehouse entities itself for simplicity
+- Is negative stock (backorder) allowed, or should adjustments be rejected if they would result in negative inventory? -> assumed: Negative stock is disallowed by default; adjustments that would result in negative stock are rejected with an error
+- What level of authentication/authorization is required (e.g., API keys, OAuth, role-based access)? -> assumed: Simple API key or token-based authentication is sufficient for initial version
+- Is multi-tenancy required (multiple organizations using the same service instance)? -> assumed: Single-tenant deployment; multi-tenancy is out of scope
+- What database/storage technology is preferred or required? -> assumed: Use a relational database (e.g., PostgreSQL) for strong consistency in stock quantity tracking
 
 ## Limitations
 - Reasoning and code authoring were model-driven; no stage needed the deterministic fallback.

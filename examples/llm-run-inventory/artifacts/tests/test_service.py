@@ -1,58 +1,61 @@
+"""Unit tests for the inventory business logic layer."""
 import unittest
+from inventory import db
+from inventory.service import InventoryService, ServiceError
 
-from inventory.service import InventoryService, NotFoundError, ValidationError, ConflictError
 
-
-class TestInventoryService(unittest.TestCase):
+class TestService(unittest.TestCase):
     def setUp(self):
-        self.service = InventoryService()
-        self.product = self.service.create_product("SKU1", "Widget")
-        self.warehouse = self.service.create_warehouse("WH1", "Main Warehouse")
+        self.conn = db.get_conn(":memory:")
+        db.init_db(self.conn)
+        self.svc = InventoryService(self.conn)
+        self.wh = self.svc.create_warehouse("Main", "NYC")
+        self.pr = self.svc.create_product("Widget", "pcs")
 
-    def test_create_and_get_product(self):
-        fetched = self.service.get_product(self.product.id)
-        self.assertEqual(fetched.sku, "SKU1")
+    def test_add_and_get_stock(self):
+        r = self.svc.add_stock(self.wh["id"], self.pr["id"], 100, threshold=20)
+        self.assertEqual(r["quantity"], 100)
+        got = self.svc.get_stock(self.wh["id"], self.pr["id"])
+        self.assertEqual(got["quantity"], 100)
 
-    def test_get_missing_product_raises(self):
-        with self.assertRaises(NotFoundError):
-            self.service.get_product(999)
+    def test_duplicate_stock_rejected(self):
+        self.svc.add_stock(self.wh["id"], self.pr["id"], 10)
+        with self.assertRaises(ServiceError):
+            self.svc.add_stock(self.wh["id"], self.pr["id"], 10)
 
-    def test_create_stock_item_and_duplicate(self):
-        item = self.service.create_stock_item(self.product.id, self.warehouse.id, 10)
-        self.assertEqual(item.quantity, 10)
-        with self.assertRaises(ConflictError):
-            self.service.create_stock_item(self.product.id, self.warehouse.id, 5)
+    def test_adjust_increment_decrement_and_alert(self):
+        self.svc.add_stock(self.wh["id"], self.pr["id"], 50, threshold=10)
+        r = self.svc.adjust_stock(self.wh["id"], self.pr["id"], "DECREMENT", 20, reason="sale")
+        self.assertEqual(r["quantity_after"], 30)
+        self.assertFalse(r["alert_triggered"])
+        r2 = self.svc.adjust_stock(self.wh["id"], self.pr["id"], "DECREMENT", 25, reason="sale")
+        self.assertEqual(r2["quantity_after"], 5)
+        self.assertTrue(r2["alert_triggered"])
+        alerts = self.svc.list_alerts()
+        self.assertEqual(len(alerts), 1)
 
-    def test_adjust_stock_negative_raises(self):
-        self.service.create_stock_item(self.product.id, self.warehouse.id, 5)
-        with self.assertRaises(ValidationError):
-            self.service.adjust_stock(self.product.id, self.warehouse.id, -10)
+    def test_negative_stock_rejected(self):
+        self.svc.add_stock(self.wh["id"], self.pr["id"], 10)
+        with self.assertRaises(ServiceError):
+            self.svc.adjust_stock(self.wh["id"], self.pr["id"], "DECREMENT", 20)
 
-    def test_threshold_alert_triggering_and_resolution(self):
-        self.service.create_stock_item(self.product.id, self.warehouse.id, 10)
-        self.service.set_threshold(self.product.id, self.warehouse.id, 5)
-        adjustment, item, triggered = self.service.adjust_stock(
-            self.product.id, self.warehouse.id, -8, reason="sale")
-        self.assertEqual(item.quantity, 2)
-        self.assertTrue(triggered)
-        alerts, total = self.service.list_alerts()
-        self.assertEqual(total, 1)
-        self.assertEqual(alerts[0].status, "ACTIVE")
+    def test_idempotency(self):
+        self.svc.add_stock(self.wh["id"], self.pr["id"], 10)
+        r1 = self.svc.adjust_stock(self.wh["id"], self.pr["id"], "INCREMENT", 5, idempotency_key="k1")
+        r2 = self.svc.adjust_stock(self.wh["id"], self.pr["id"], "INCREMENT", 5, idempotency_key="k1")
+        self.assertEqual(r1, r2)
+        got = self.svc.get_stock(self.wh["id"], self.pr["id"])
+        self.assertEqual(got["quantity"], 15)
 
-        adjustment2, item2, triggered2 = self.service.adjust_stock(
-            self.product.id, self.warehouse.id, 10, reason="restock")
-        self.assertFalse(triggered2)
-        alerts2, total2 = self.service.list_alerts(status="RESOLVED")
-        self.assertEqual(total2, 1)
-
-    def test_resolve_alert(self):
-        self.service.create_stock_item(self.product.id, self.warehouse.id, 10)
-        self.service.set_threshold(self.product.id, self.warehouse.id, 5)
-        self.service.adjust_stock(self.product.id, self.warehouse.id, -8)
-        alerts, _ = self.service.list_alerts()
-        alert = self.service.resolve_alert(alerts[0].id, resolved_by="admin")
-        self.assertEqual(alert.status, "RESOLVED")
-        self.assertEqual(alert.resolved_by, "admin")
+    def test_audit_log_and_threshold(self):
+        self.svc.add_stock(self.wh["id"], self.pr["id"], 10)
+        self.svc.set_threshold(self.wh["id"], self.pr["id"], 5)
+        self.svc.adjust_stock(self.wh["id"], self.pr["id"], "SET", 3, reason="correction")
+        audit = self.svc.list_audit()
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["quantity_after"], 3)
+        alerts = self.svc.list_alerts()
+        self.assertEqual(len(alerts), 1)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ class Blackboard:
     docs: list[Artifact] = field(default_factory=list)
     validation: Optional[ValidationReport] = None
     validated_fingerprint: str = ""   # artifact set the current report was computed on
+    docs_attempted: bool = False        # a docs stage ran (even if it produced nothing)
     summary: Optional[EngineeringSummary] = None
     assumptions: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -71,6 +72,19 @@ class Blackboard:
                     section[i] = art
                     changed.append(art)
             return changed
+
+    def endpoint_coverage(self) -> tuple[list, list]:
+        """Split the design's endpoints into (implemented, design_only) by looking for each
+        path's literal prefix in the generated code. Cheap, honest, and enough to stop a
+        contract from promising endpoints the prototype slice does not serve."""
+
+        api = list(self.architecture.api) if self.architecture else []
+        blob = "\n".join(a.content for a in self.code if a.path.endswith(".py"))
+        implemented, design_only = [], []
+        for e in api:
+            prefix = e.path.split("{")[0].rstrip("/") or "/"
+            (implemented if prefix and prefix in blob else design_only).append(e)
+        return implemented, design_only
 
     def fingerprint(self) -> str:
         """Cheap identity of the current artifact set (paths + sizes), for idempotence."""

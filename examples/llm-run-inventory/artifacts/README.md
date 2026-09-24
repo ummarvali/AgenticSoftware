@@ -1,6 +1,6 @@
 # Generated Service
 
-A REST-based Inventory Service that manages product stock levels across multiple warehouses. It supports creating products/warehouses, recording stock additions and adjustments (with audit trail), querying current stock by warehouse/product, and automatically raising alerts when quantities fall below configured thresholds. The system is built for consistency on writes (adjustments) and fast reads (queries), with asynchronous alert generation triggered by stock change events.
+A single-tenant inventory management service exposing a versioned REST API for managing warehouses, products, stock levels, and adjustments. Stock quantities are tracked per warehouse/product pair with optimistic-locking based concurrency control, per-pair (or global default) low-stock thresholds, automatic alert generation on threshold breach, and a full audit trail of adjustments. The prototype runs as a single Python process using only the standard library (http.server for HTTP, sqlite3 for persistence), while the target production architecture is a horizontally scalable REST service backed by a relational database such as PostgreSQL.
 
 ## Tests
 

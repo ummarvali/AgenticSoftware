@@ -1,0 +1,21 @@
+openapi: 3.0.3
+info:
+  title: Generated API
+  version: 1.0.0
+  description: Endpoints implemented by the generated prototype slice.
+paths:
+  /v1/transactions/validate:
+    post:
+      summary: Validate a card transaction against format, field, and business rules; idempotent via Idempotency-Key header
+      responses:
+        "200": { description: OK }
+  /healthz:
+    get:
+      summary: Liveness probe indicating the process is running
+      responses:
+        "200": { description: OK }
+  /readyz:
+    get:
+      summary: Readiness probe verifying local SQLite store is accessible
+      responses:
+        "200": { description: OK }
