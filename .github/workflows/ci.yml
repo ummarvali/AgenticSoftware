@@ -37,6 +37,11 @@ jobs:
           PYTHONPATH: src
         run: python -m agentic_sdlc --quiet --file examples/greenfield.txt
 
+      - name: Evaluation scorecard (quality / adherence / efficiency; recorded live runs)
+        env:
+          PYTHONPATH: src
+        run: python scripts/evaluate.py
+
       - name: End-to-end — recovery paths (retry, degrade, ambiguous → repair)
         env:
           PYTHONPATH: src

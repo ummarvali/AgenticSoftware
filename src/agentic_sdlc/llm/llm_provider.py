@@ -56,6 +56,8 @@ def _to_int(value, default: int) -> int:
 
 # Output budget per stage. Reasoning stages are small; authoring a whole project is not.
 _MAX_TOKENS = {"analyze": 4096, "decompose": 4096, "design": 4096, "codegen": 32000}
+# Wall-clock budget per stage. Authoring a project streams for minutes; reasoning does not.
+_TIMEOUTS = {"codegen": 900.0}
 
 
 def _coerce_json(text: str) -> dict:
@@ -136,7 +138,7 @@ class LLMProvider(ReasoningProvider):
             start = time.time()
             try:
                 resp = self._client.complete(system, user, json_mode=True,
-                                             timeout=self._timeout,
+                                             timeout=_TIMEOUTS.get(stage, self._timeout),
                                              max_tokens=_MAX_TOKENS.get(stage, 4096))
                 try:
                     data = _coerce_json(resp.text)

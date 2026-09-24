@@ -207,13 +207,18 @@ class AnthropicClient:
                  timeout: float = 30.0, max_tokens: int = 4096) -> LLMResponse:  # pragma: no cover - network
         if json_mode:
             system = system + "\n\nReturn ONLY a valid JSON object: no prose, no markdown fences."
-        resp = self._client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            timeout=timeout,
-        )
+        kwargs = dict(model=self.model, max_tokens=max_tokens, system=system,
+                      messages=[{"role": "user", "content": user}], timeout=timeout)
+        if max_tokens > 8192:
+            # Long outputs (a whole project) can take several minutes to generate. Streaming
+            # keeps the connection alive token by token instead of waiting on one response,
+            # which is what the Anthropic SDK requires for long non-interactive generations.
+            with self._client.messages.stream(**kwargs) as stream:
+                for _ in stream.text_stream:
+                    pass
+                resp = stream.get_final_message()
+        else:
+            resp = self._client.messages.create(**kwargs)
         # Concatenate every text block (thinking blocks have no .text and are skipped).
         text = "".join(getattr(b, "text", "") or "" for b in (resp.content or []))
         if getattr(resp, "stop_reason", "") == "max_tokens":

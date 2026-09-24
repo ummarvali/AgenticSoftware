@@ -1,0 +1,60 @@
+openapi: 3.0.3
+info:
+  title: Generated API
+  version: 1.0.0
+paths:
+  /products:
+    post:
+      summary: Create a new product
+      responses:
+        "201": { description: OK }
+  /products/{productId}:
+    get:
+      summary: Get product details
+      responses:
+        "200": { description: OK }
+  /warehouses:
+    post:
+      summary: Create a new warehouse
+      responses:
+        "201": { description: OK }
+  /warehouses/{warehouseId}:
+    get:
+      summary: Get warehouse details
+      responses:
+        "200": { description: OK }
+  /stock:
+    post:
+      summary: Initialize or add stock for a product at a warehouse
+      responses:
+        "201": { description: OK }
+  /stock/adjustments:
+    post:
+      summary: Adjust stock quantity (increment/decrement) with reason, recorded as immutable audit entry; triggers alert evaluation
+      responses:
+        "201": { description: OK }
+  /stock:
+    get:
+      summary: Query current stock levels, optionally filtered by warehouse_id and/or product_id, paginated
+      responses:
+        "200": { description: OK }
+  /stock/{warehouseId}/{productId}:
+    get:
+      summary: Get current stock level for a specific product in a specific warehouse
+      responses:
+        "200": { description: OK }
+  /thresholds/{productId}/{warehouseId}:
+    put:
+      summary: Set or update the low-stock alert threshold for a product-warehouse pair (warehouseId can be 'default' for global threshold)
+      responses:
+        "200": { description: OK }
+  /alerts:
+    get:
+      summary: List alerts, optionally filtered by status, warehouse, or product
+      responses:
+        "200": { description: OK }
+  /alerts/{alertId}/resolve:
+    post:
+      summary: Manually resolve an active alert (e.g., after restock)
+      responses:
+        "200": { description: OK }

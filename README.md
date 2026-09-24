@@ -381,6 +381,7 @@ AgenticSoftware/
 │  └─ README.md
 ├─ scripts/
 │  ├─ demo.py                          One-command narrated demo (all scenarios + monitoring)
+│  ├─ evaluate.py                      Evaluation scorecard: quality / adherence / efficiency (+ recorded live runs)
 │  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
 ├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
 ├─ src/agentic_sdlc/
@@ -494,6 +495,46 @@ contract/doc presence → risk register → human acceptance gate.
 Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
 `--inject-fault code:9` (halt), `examples/ambiguous.txt` (repair loop).
 
+### AI-specific risks — hallucination, drift, overreach
+
+| Risk | Control in this system | Honest gap |
+| --- | --- | --- |
+| **Hallucinated code** (invented APIs, imports, behaviour) | Model-authored code is written to a throwaway sandbox, **compiled, and its own tests executed** before it is accepted; failure → verified template, recorded as a `codegen` fallback | — |
+| **Hallucinated plan / design** | Plan: strict JSON, task-category allow-list, acyclic check, else deterministic plan. Design: typed parsing. Analysis: every ambiguity becomes an *explicit default assumption* a human sees at the clarification gate | No automated design↔code↔tests consistency check yet (a Critic agent is the documented next step) |
+| **Drift within a run** (scope creep, loops) | One output schema per agent; agents cannot add tasks; the DAG bounds the work; `reuse` decisions prevent repeated work; bounded repair iterations; call + cost budget | — |
+| **Drift over time** (model / prompt changes) | The deterministic suite is a fixed regression baseline; recorded live runs in `examples/llm-run*` are golden snapshots; `scripts/evaluate.py` scores every scenario and runs in CI on every push | Live runs are not re-executed in CI (cost, non-determinism) — they are scored from their recorded `result.json` |
+| **Overreach** (an agent doing more than allowed) | Least privilege by construction: an agent's only tools are a sandboxed file store and a subprocess runner — no shell, no network tool, no git, no deploy. Agents never call each other or the model's tools; the model returns data, Python decides. Three human gates | The sandbox is process-level, not network-isolated (see above) |
+| **Fail-closed by default** | No key → deterministic; bad reply → per-stage fallback; compile failure → halt for a human; any failing check → `REVIEW NEEDED`, never `PASS`; partial runs always persisted | — |
+
+**Memory.** Working memory is the `Blackboard` — one shared, lock-guarded object per run and
+the single source of truth for every agent. Agents are stateless between runs, and every model
+call is stateless: each stage receives only the blackboard fields it needs, never an accumulating
+conversation, so context cannot bloat or drift across stages and nothing leaks between
+requirements. `result.json` is the durable *audit record*, not memory. A long-term memory
+(repository index for brownfield, retrieval of past runs) is a future seam behind
+`CodebaseAnalyst`.
+
+**Why no MCP / model tool-calling.** The model never invokes tools; it returns structured JSON
+and the orchestrator acts on it. There is therefore no prompt-injection-to-tool-call path. MCP
+becomes the right choice when the agent must reach Jira, GitHub or a repository in production —
+through the firm's gateway, with allow-listed servers.
+
+### Evaluation
+
+`python scripts/evaluate.py` produces a scorecard (also `--json`), and CI runs it on every push:
+
+| Axis | What is scored |
+| --- | --- |
+| Output quality | validation checks passed; artifact set has no duplicates; summary carries risks and a validation approach |
+| Task adherence | outcome matches the scenario's expectation (pass / halt); every planned task completed or explicitly reused; expected retries / repairs / degradations observed; brownfield impact analysed |
+| Tool correctness | the compile + test gate ran (validation result present); sandbox path guard, timeout and secret scrubbing are unit-tested in `tests/test_tools.py` and `tests/test_llm_provider.py` |
+| Operational efficiency | duration, tasks, retries, repairs, degradations, parallel levels, reused tasks; for recorded live runs: calls, tokens, estimated cost, fallback stages, and whether the code was model-authored |
+
+Six offline scenarios are scored deterministically (greenfield, brownfield, ambiguous → repair,
+retry recovery, optional-task degradation, required-task halt). Recorded live-model runs under
+`examples/llm-run*` are scored from their `result.json`, so the model path is evaluated without
+a key and without non-determinism in CI.
+
 ### Security — what is enforced, and what is not
 
 Enforced:
@@ -568,6 +609,8 @@ Not enforced in this prototype (documented, would be required for production):
 | Evidence of the model-driven path | `examples/llm-run/result.json` (tokens, latency, cost, per-stage fallbacks) |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Spend guardrail | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
+| Evaluation (quality / adherence / tool correctness / efficiency) | `scripts/evaluate.py` (CI step), `tests/test_tools.py` |
+| AI-risk controls (hallucination / drift / overreach) | sandbox gate, schema + allow-list, bounded loops, least-privilege tools, human gates — §8 |
 | Secret isolation for generated code | `tools/code_runner.scrubbed_env` |
 | Idempotent agents (no duplicate work under rich plans) | `agents/*.decide` → `reuse`; `Blackboard.merge` |
 

@@ -25,6 +25,7 @@ class FakeClient:
     def complete(self, system, user, *, json_mode=True, timeout=30.0, max_tokens=4096):
         self.calls += 1
         self.last_max_tokens = max_tokens
+        self.last_timeout = timeout
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -204,6 +205,7 @@ class LenientParsingTests(unittest.TestCase):
         provider.generate_code(AnalysisResult(kind=RequirementKind.GREENFIELD, intent="i", normalized_problem="p"),
                                Architecture(overview="o", components=["c"]))
         self.assertGreaterEqual(provider._client.last_max_tokens, 32000)
+        self.assertGreaterEqual(provider._client.last_timeout, 600)   # minutes, not seconds
 
     def test_non_json_reply_error_shows_what_came_back(self):
         provider = _provider(["Sure! Here is the design you asked for.", "still not json"])
