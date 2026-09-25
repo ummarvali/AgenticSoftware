@@ -99,8 +99,9 @@ curl http://127.0.0.1:8000/api/stats/<code>        # click analytics
 Containers: `docker build -t agentic-sdlc .` (the agent; pass `-e ANTHROPIC_API_KEY` for the
 live mode) and `docker build -t url-shortener demo` (the demo service).
 
-**Team pipeline:** Actions → *Agent pipeline* → Run workflow — the key stays in GitHub
-Secrets, a named reviewer approves, the output arrives as a pull request. Setup in [§12](#12-operating-this-in-production--the-sre-view).
+**Team pipeline — try it without a key:** open an issue from the [*Agent request* form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml) and pick a
+test case; a maintainer approves, the agent runs in GitHub Actions with the key held in GitHub,
+the result is posted on your issue, and an accepted result becomes a pull request. Setup in [§12](#12-operating-this-in-production--the-sre-view).
 
 ---
 
@@ -504,9 +505,11 @@ AgenticSoftware/
 │  ├─ evaluate.py                      Evaluation scorecard: quality / adherence / efficiency; re-tests every recorded live run
 │  ├─ verify_change.py                 Re-verify a recorded brownfield change set against its repository
 │  ├─ apply_change.py                  Apply an accepted run to a branch (used by the pipeline's approval job)
+│  ├─ pipeline_request.py              Validate a pipeline request (issue form / Run workflow); format the issue report
 │  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
 ├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
-├─ .github/workflows/agent.yml        The agent as a team pipeline: run → human approval → pull request
+├─ .github/workflows/agent.yml        The agent as a team pipeline: request → approval → run → acceptance → pull request
+├─ .github/ISSUE_TEMPLATE/agent-request.yml   The "Agent request" form: preset test cases or a custom requirement
 ├─ src/agentic_sdlc/
 │  ├─ __init__.py                     Public API (run_pipeline, models)
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
@@ -772,7 +775,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
 | Evidence of the model-driven path | `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
-| Controlled autonomy in a team setting | `.github/workflows/agent.yml` — agent run in CI, GitHub Environment approval, PR on acceptance |
+| Controlled autonomy in a team setting | `.github/workflows/agent.yml` — request via issue form, spend approval, agent run in CI, acceptance approval, PR on acceptance |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
 | Evaluation (quality / adherence / tool correctness / efficiency) | `scripts/evaluate.py` (CI step), `tests/test_tools.py` |
 | AI-risk controls (hallucination / drift / overreach) | sandbox gate, schema + allow-list, bounded loops, least-privilege tools, human gates — §8 |
@@ -808,37 +811,56 @@ The agent system is the application; a pipeline is how it is run and operated by
 [`.github/workflows/agent.yml`](.github/workflows/agent.yml).
 
 ```
-Actions → "Agent pipeline" → Run workflow (requirement, optional repo folder, provider)
+Request: an issue from the "Agent request" form (preset test cases or your own requirement)
+         or Actions → "Agent pipeline" → Run workflow (maintainers)
    │
-   ├─ job 1  agent run      key from GitHub Secrets (this job only) · live [LLM] console trail
+   ├─ request     untrusted text parsed as data: preset scenario, length cap, allow-listed folder
+   │
+   ├─ ⏸ approval  GitHub Environment "agent-run": a maintainer approves spend before the key is used
+   │
+   ├─ agent run   key from the environment secret (this job only, main branch only) · live [LLM] console trail
    │                         engineering summary published on the run page · run record uploaded
    │                         a failing or halted run, a missing key, or any model stage that fell
    │                         back to the deterministic engine stops here — never offered for approval
    │
-   ├─ job 2  ⏸ approval      GitHub Environment "agent-acceptance": required reviewers approve
-   │                         or reject after reading the summary (the human acceptance gate)
+   ├─ report      verdict, checks, tokens/cost and the engineering summary posted on the issue
    │
-   └─ (job 2, after approval) pull request
-                             approved change set applied to a branch (scripts/apply_change.py,
-                             line endings preserved) → PR with the summary as its description
+   ├─ ⏸ approval  GitHub Environment "agent-acceptance": a reviewer accepts or rejects the result
+   │
+   └─ pull request  accepted change set applied to a branch (scripts/apply_change.py, line
+                    endings preserved) → PR with the summary as its description, linked on the issue
 ```
+
+**Try it (reviewers).** Open an issue → [*Agent request*](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml) → pick a test case — the mandatory URL
+shortener, another greenfield domain, a brownfield change to `demo/`, the ambiguous "Make the
+app faster.", or your own requirement — and submit. The issue gets a link to the run; once a
+maintainer approves the spend, the console streams live and the result is posted back on the
+issue, followed by the pull request if it is accepted. No key or write access is needed.
+
+Two environments, because they gate two different decisions: `agent-run` is *who may spend
+model credit* (and it holds the key), `agent-acceptance` is *whether the output is good
+enough to become a pull request*. GitHub approves a job before it starts, so the sign-off on
+a result needs its own job after the run.
 
 What this changes compared with running the CLI on a laptop: nobody holds the model key (it
 lives in the secret store and reaches one step of one job); every run is an auditable CI run
 with its console log, summary and `result.json` retained; acceptance is a recorded approval
-by a named reviewer; the output enters the normal review path as a pull request; and one run
-at a time (`concurrency`) bounds spend. Requirement text is passed to the job as an
-environment variable, never interpolated into the script, so it cannot inject shell commands.
+by a named reviewer; the output enters the normal review path as a pull request; and spend is
+bounded by the approval on `agent-run` plus the workspace spend limit. Requirement text is
+parsed by `scripts/pipeline_request.py` and passed to the agent as an environment variable,
+never interpolated into a script, so it cannot inject shell commands.
 
 **Who can use the key (public repository).** GitHub secrets are encrypted and write-only —
 nobody, including the owner, can read one back, and they are masked in logs. The workflow has
-no `pull_request` trigger, so forks and outside contributors cannot run it; starting it needs
-write access. The key is an *environment* secret of `agent-run`, restricted to `main`, so a
+no `pull_request` trigger, so forks cannot run it with the key. Anyone can open an *Agent
+request* issue, but that run waits for a required reviewer of `agent-run` before the key is
+released. The key is an *environment* secret of `agent-run`, restricted to `main`, so a
 workflow edited on another branch cannot reach it. Outside the repository: a dedicated key
 for this pipeline, a monthly spend limit on its Anthropic workspace, and rotation on a schedule.
 
-One-time setup (repository Settings): create the `agent-run` environment (deployment branches:
-`main` only) and add `ANTHROPIC_API_KEY` as its environment secret; create the
+One-time setup (repository Settings): create the `agent-run` environment (required reviewers —
+mandatory, since issues can start runs; deployment branches: `main` only) and add
+`ANTHROPIC_API_KEY` as its environment secret; create the
 `agent-acceptance` environment with required reviewers; allow GitHub Actions to create pull
 requests (Actions → General → Workflow permissions). Pull requests opened with the default
 `GITHUB_TOKEN` do not trigger other workflows — a GitHub App token would let CI run on them

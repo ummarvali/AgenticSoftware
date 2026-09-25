@@ -1,0 +1,34 @@
+name: Agent request
+description: Ask the agent pipeline to turn a requirement into a reviewed pull request.
+title: "[agent] "
+labels: ["agent-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Opening this issue starts the **Agent pipeline** (Actions tab). A maintainer approves
+        the run before the model is called; the agent then plans, builds and validates, and
+        posts its result here. If the maintainer accepts it, a pull request follows.
+        A run takes about 6–12 minutes after approval.
+  - type: dropdown
+    id: scenario
+    attributes:
+      label: Scenario
+      description: Pick a preset test case, or a custom one and write the requirement below.
+      options:
+        - "Greenfield: URL shortener (the mandatory use case)"
+        - "Greenfield: another domain (inventory with low-stock alerts)"
+        - "Brownfield enhancement: add rate limiting to demo/"
+        - "Ambiguous: \"Make the app faster.\" against demo/"
+        - "Custom: new project (write the requirement below)"
+        - "Custom: change to demo/ — bug fix, refactor, tests or docs (write it below)"
+    validations:
+      required: true
+  - type: textarea
+    id: requirement
+    attributes:
+      label: Requirement
+      description: Required for the custom scenarios; for a preset it replaces the preset text. Plain language, up to 2000 characters.
+      placeholder: "e.g. Add an endpoint to delete a short link, with tests"
+    validations:
+      required: false

@@ -1,26 +1,34 @@
 # The agent as a team pipeline — the production operating model.
 #
-# Nobody runs the model from a laptop or holds the key: a requirement is submitted here,
-# the agent runs in CI with the key from a GitHub Environment secret, its engineering summary is
-# published on the run page, and the run then WAITS for a human to approve it (GitHub
-# Environment "agent-acceptance" with required reviewers). Only an approved run is turned
-# into a pull request — so the proposal lands in normal code review and normal CI.
+# Nobody runs the model from a laptop or holds the key. A request comes in (a maintainer's
+# "Run workflow", or an issue opened from the "Agent request" form), a maintainer approves
+# the run before the model is called, the agent runs in CI with the key from a GitHub
+# Environment secret, its result is published on the run page (and on the issue), and the
+# run then WAITS for a human to accept it (GitHub Environment "agent-acceptance"). Only an
+# accepted run becomes a pull request — so the proposal lands in normal code review and CI.
+#
+# Why two environments: they gate two different decisions. "agent-run" guards the key and
+# the spend (who may start a model run, from which branch); "agent-acceptance" is the
+# engineering sign-off on what the agent produced. GitHub approvals happen before a job
+# starts, so the sign-off needs its own job after the run.
 #
 # Who can use the key: GitHub secrets are encrypted, write-only (nobody can read one back,
-# including the owner) and masked in logs. This workflow has no pull_request trigger, so
-# forks and outside contributors cannot run it; workflow_dispatch needs write access.
-# The key is an ENVIRONMENT secret of "agent-run", limited to the main branch, so a
-# workflow edited on any other branch cannot reach it either.
+# including the owner) and masked in logs. There is no pull_request trigger, so forks cannot
+# run this with the key. Anyone may open an issue, but an issue run waits for a required
+# reviewer of "agent-run" before the key is released, and that environment is limited to
+# the main branch, so a workflow edited on any other branch cannot reach the key either.
+# Issue text is untrusted: scripts/pipeline_request.py parses it (preset scenarios, a
+# length cap, an allow-listed target folder) and it reaches the agent only as data.
 #
 # One-time setup (repository Settings):
-#   1. Environments → New environment "agent-run" → Deployment branches and tags:
-#      "Selected branches" → main → Environment secrets: ANTHROPIC_API_KEY
-#      (or OPENAI_API_KEY for provider=openai). Optionally add yourself as a required
-#      reviewer, so no run spends model credit without your approval.
+#   1. Environments → New environment "agent-run" → Required reviewers: the maintainers
+#      who approve spend (required, since issues can start runs) → Deployment branches and
+#      tags: "Selected branches" → main → Environment secrets: ANTHROPIC_API_KEY
+#      (or OPENAI_API_KEY for provider=openai).
 #   2. Environments → New environment "agent-acceptance" → Required reviewers: the
 #      people allowed to accept agent output.
-#   3. Actions → General → Workflow permissions: "Read and write" and
-#      "Allow GitHub Actions to create and approve pull requests".
+#   3. Actions → General → Workflow permissions: "Allow GitHub Actions to create and
+#      approve pull requests" (jobs request the write scopes they need themselves).
 name: Agent pipeline
 
 on:
@@ -40,17 +48,63 @@ on:
         default: claude
         type: choice
         options: [claude, openai, deterministic]
+  issues:
+    types: [opened]              # the "Agent request" issue form (title starts with [agent])
 
 permissions:
   contents: read
 
 concurrency:
-  group: agent-pipeline          # one live run at a time: bounded spend
+  # One run per request; spend is bounded by the approval on "agent-run" and the model
+  # workspace's spend limit rather than by queueing (a queue would drop waiting requests).
+  group: agent-${{ github.event.issue.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
+  request:
+    name: resolve the request
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.issue.title, '[agent]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      requirement: ${{ steps.resolve.outputs.requirement }}
+      repo_path: ${{ steps.resolve.outputs.repo_path }}
+      provider: ${{ steps.resolve.outputs.provider }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate the request (untrusted text is parsed as data, never run)
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          IN_REQUIREMENT: ${{ inputs.requirement }}
+          IN_REPO_PATH: ${{ inputs.repo_path }}
+          IN_PROVIDER: ${{ inputs.provider }}
+        run: python scripts/pipeline_request.py resolve
+      - name: Acknowledge on the issue
+        if: always() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          OK: ${{ steps.resolve.outcome == 'success' }}
+          ERROR: ${{ steps.resolve.outputs.error }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$OK" = true ]; then
+            msg="Request received — [pipeline run]($RUN_URL). A maintainer approves the run before the model is called; the result will be posted here (about 6–12 minutes after approval)."
+          else
+            msg="This request could not be started: ${ERROR:-invalid request}. Please open a new issue from the **Agent request** form."
+          fi
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$msg"
+
   run-agent:
     name: agent run (plan → build → validate → summarize)
+    needs: request
     runs-on: ubuntu-latest
     environment: agent-run             # the key is this environment's secret, main branch only
     timeout-minutes: 45
@@ -73,9 +127,9 @@ jobs:
           PYTHONPATH: src
           # Inputs are passed as environment variables, never interpolated into the
           # script, so a crafted requirement cannot inject shell commands.
-          REQUIREMENT: ${{ inputs.requirement }}
-          REPO_PATH: ${{ inputs.repo_path }}
-          PROVIDER: ${{ inputs.provider }}
+          REQUIREMENT: ${{ needs.request.outputs.requirement }}
+          REPO_PATH: ${{ needs.request.outputs.repo_path }}
+          PROVIDER: ${{ needs.request.outputs.provider }}
         run: |
           set +e
           # Fail fast if the chosen model has no key: otherwise every stage would fall
@@ -89,7 +143,7 @@ jobs:
           # "--" so a requirement starting with "-" is never read as an option.
           python -u -m agentic_sdlc "${args[@]}" -- "$REQUIREMENT"
           rc=$?
-          run_dir=$(ls -d runs/* | tail -1)
+          run_dir=$(ls -d runs/* 2>/dev/null | tail -1)
           # A model run is only reviewable if the model did the work: any stage that
           # fell back to the deterministic engine fails the job before the gate.
           if [ $rc -eq 0 ] && [ "$PROVIDER" != deterministic ]; then
@@ -115,14 +169,57 @@ jobs:
           path: runs/
           retention-days: 30
 
+  report:
+    name: post the result on the issue
+    needs: [request, run-agent]
+    if: always() && github.event_name == 'issues' && needs.request.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        continue-on-error: true           # absent when the run was rejected or stopped early
+        with:
+          name: agent-run
+          path: runs/
+      - name: Comment with the verdict and the engineering summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_ID: ${{ needs.run-agent.outputs.run_id }}
+          OUTCOME: ${{ needs.run-agent.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -n "$RUN_ID" ] && [ -f "runs/$RUN_ID/result.json" ]; then
+            python scripts/pipeline_request.py report "runs/$RUN_ID" > comment.md
+          else
+            echo "**The run was not approved, or stopped before producing a result.**" > comment.md
+          fi
+          {
+            echo
+            if [ "$OUTCOME" = success ]; then
+              echo "Next: a maintainer reviews this result and accepts or rejects it; on acceptance a pull request is opened and linked here."
+            else
+              echo "This run did not pass its gates, so it will not be offered for acceptance."
+            fi
+            echo "Full console log and run record: [pipeline run]($RUN_URL)"
+          } >> comment.md
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+
   accept:
     name: human acceptance → pull request
-    needs: run-agent
+    needs: [request, run-agent]
     runs-on: ubuntu-latest
     environment: agent-acceptance      # pauses here until a required reviewer approves
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -136,8 +233,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ needs.run-agent.outputs.run_id }}
-          REQUIREMENT: ${{ inputs.requirement }}
-          REPO_PATH: ${{ inputs.repo_path }}
+          REQUIREMENT: ${{ needs.request.outputs.requirement }}
+          REPO_PATH: ${{ needs.request.outputs.repo_path }}
+          ISSUE: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           branch="agent/${RUN_ID}"
@@ -150,8 +248,15 @@ jobs:
             python scripts/apply_change.py "runs/${RUN_ID}"
           fi
           git add -A
-          git commit -m "Agent proposal ${RUN_ID}: ${REQUIREMENT:0:60}"
+          title=$(printf '%s\n' "$REQUIREMENT" | head -n 1 | cut -c1-70)
+          git commit -m "Agent proposal ${RUN_ID}: ${title}"
           git push origin "$branch"
-          gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
-            --title "Agent: ${REQUIREMENT:0:70}" \
-            --body-file "runs/${RUN_ID}/artifacts/ENGINEERING_SUMMARY.md"
+          cp "runs/${RUN_ID}/artifacts/ENGINEERING_SUMMARY.md" pr-body.md
+          if [ -n "$ISSUE" ]; then printf '\n\nRequested in #%s.\n' "$ISSUE" >> pr-body.md; fi
+          pr_url=$(gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
+            --title "Agent: ${title}" --body-file pr-body.md)
+          echo "Pull request: $pr_url"
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
+              --body "Accepted by a maintainer — pull request: $pr_url"
+          fi
