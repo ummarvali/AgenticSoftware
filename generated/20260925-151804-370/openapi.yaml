@@ -1,0 +1,239 @@
+openapi: 3.0.3
+info:
+  title: URL Shortener Service
+  version: "1.0.0"
+  description: >
+    REST API to create, retrieve, redirect and delete shortened URLs, with
+    click analytics. Management endpoints require an API key sent in the
+    X-API-Key header; the redirect endpoint is public.
+servers:
+  - url: http://localhost:8000
+paths:
+  /api/v1/urls:
+    post:
+      summary: Create a short URL
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [long_url]
+              properties:
+                long_url:
+                  type: string
+                  example: "https://example.com/some/long/path"
+                custom_alias:
+                  type: string
+                  nullable: true
+                  example: "my-alias"
+                ttl_seconds:
+                  type: integer
+                  nullable: true
+                  example: 3600
+      responses:
+        "201":
+          description: Short URL created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateResponse"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Missing/invalid API key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Custom alias already in use
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /{short_code}:
+    get:
+      summary: Redirect to the original long URL
+      parameters:
+        - $ref: "#/components/parameters/ShortCode"
+      responses:
+        "302":
+          description: Redirect to long_url
+          headers:
+            Location:
+              schema: { type: string }
+        "404":
+          description: Unknown, inactive or expired short code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/urls/{short_code}:
+    get:
+      summary: Retrieve metadata for a short URL
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ShortCode"
+      responses:
+        "200":
+          description: URL metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetadataResponse" }
+        "401":
+          description: Missing/invalid API key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Unknown short code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      summary: Deactivate a short URL
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ShortCode"
+      responses:
+        "200":
+          description: URL deactivated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResponse" }
+        "401":
+          description: Missing/invalid API key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Caller does not own this short code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Unknown short code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/urls/{short_code}/analytics:
+    get:
+      summary: Retrieve click analytics for a short URL
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ShortCode"
+      responses:
+        "200":
+          description: Analytics summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnalyticsResponse" }
+        "401":
+          description: Missing/invalid API key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Unknown short code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "ok" }
+                  db: { type: string, example: "ok" }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    ShortCode:
+      name: short_code
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    CreateResponse:
+      type: object
+      properties:
+        short_code: { type: string }
+        short_url: { type: string }
+        long_url: { type: string }
+        created_at: { type: string }
+        expires_at: { type: string, nullable: true }
+    MetadataResponse:
+      type: object
+      properties:
+        short_code: { type: string }
+        long_url: { type: string }
+        owner: { type: string }
+        created_at: { type: string }
+        expires_at: { type: string, nullable: true }
+        is_active: { type: boolean }
+    DeleteResponse:
+      type: object
+      properties:
+        short_code: { type: string }
+        is_active: { type: boolean, example: false }
+    AnalyticsResponse:
+      type: object
+      properties:
+        short_code: { type: string }
+        total_clicks: { type: integer }
+        clicks_by_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string }
+              count: { type: integer }
+        top_referrers:
+          type: array
+          items:
+            type: object
+            properties:
+              referrer: { type: string }
+              count: { type: integer }
+        top_user_agents:
+          type: array
+          items:
+            type: object
+            properties:
+              agent: { type: string }
+              count: { type: integer }
