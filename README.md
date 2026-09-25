@@ -14,7 +14,7 @@ approve.
 > to an existing repository (enhancements, bug fixes, refactors, test and documentation
 > improvements — proposed as a validated change set, never applied), and ambiguous
 > requirements. (Recorded brownfield evidence: rate-limiting enhancements, from the CLI and
-> through the pipeline in PRs #3 and #5, plus the ambiguous performance change in PR #7; bug
+> through the pipeline in PRs #3 and #5, plus the ambiguous performance change clarified on the issue and built in PR #9 (PR #7 is the same request built on assumptions, before the clarification round); bug
 > fixes, refactors and test/doc changes take the same change-mode path, not yet recorded.)
 
 - **Model-driven by design** — a live LLM (Claude / OpenAI / Azure / any OpenAI-compatible
@@ -114,6 +114,7 @@ Pipeline runs on GitHub, plus four earlier live runs from the CLI, checked in ex
 | **A brownfield change requested through the issue form** — "add rate limiting" to `demo/`: 6/6 checks, the change validated with `demo/`'s 20 existing tests plus 21 new ones, 49k tokens (~$0.37). Code review of the PR then found two security gaps the automated gates cannot see (an unauthenticated admin endpoint; a client-chosen `Authorization` value used as the quota key) — which is what the acceptance gate and PR review are for, and it led to a SECURITY rule in the code-generation prompts | [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [pull request #3](https://github.com/ummarvali/AgenticSoftware/pull/3) |
 | **The same request after that finding** — re-run once the SECURITY rule was in the prompts: 6/6 checks, 36 tests (20 existing + 16 new); limits are configuration only (no admin endpoint), and a client key counts only if it matches a server-side list, else the peer address is used. Verified by running it: the 4th request over a limit of 3 gets 429 with `Retry-After`, rotating fake keys stays at 429, `/admin/*` is 404. ~54k tokens (~$0.41) | [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [pull request #5](https://github.com/ummarvali/AgenticSoftware/pull/5) |
 | **An ambiguous requirement through the issue form** — "Make the app faster." against `demo/`: the analysis records its interpretation as explicit assumptions (backend/API and database are the targets; no profiling data exists yet; code-level changes only, no new infrastructure), and the change set is validated 6/6 with 35 tests. The model chose a broad reading — a profiling toolkit plus an opt-in batched-commit mode in the store, not a default speed-up — which is exactly what the acceptance review is there to judge (see §9) | [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [pull request #7](https://github.com/ummarvali/AgenticSoftware/pull/7) |
+| **An ambiguous requirement, clarified on the issue** — "Make the app faster." against `demo/`: the agent asked its blocking questions on the issue and built nothing ([run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36143833868)); the requester answered with `/answer` (the redirect endpoint; cache lookups in memory, correct after delete or expiry), which started the build ([run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36145352252)). Result: a focused change — an LRU cache on the redirect path, a `DELETE /links/{code}` endpoint that invalidates the cache, expiry checked on every read — with `openapi.yaml` and README updated; 28 tests (20 existing + 8 new). Verified by running it: redirects 302, delete 204 then 404, a 1-second link 404 after expiry | [issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8) → [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9) |
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
@@ -339,7 +340,7 @@ python -m pip install -e ".[dev]"; pytest        # or with pytest
 **Run on a real model (Claude):**
 
 The system was developed and exercised end to end against a real Anthropic key; the pipeline
-runs ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
+runs ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7), [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
 this repository and none is needed to run, test or evaluate it** — without a key the same
 pipeline runs on the deterministic engine. To reproduce a live run yourself:
 
@@ -405,7 +406,7 @@ Override the root with `--output-root`. Nothing is written anywhere else.
 
 This is the same model as a CI job workspace or an artifact store: the outcome is a
 *reviewable proposal*, not a change already applied. `runs/` is git-ignored — the
-**recorded evidence** is the pipeline pull requests ([#1](https://github.com/ummarvali/AgenticSoftware/pull/1), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), [#5](https://github.com/ummarvali/AgenticSoftware/pull/5), [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) — left unmerged on
+**recorded evidence** is the pipeline pull requests ([#1](https://github.com/ummarvali/AgenticSoftware/pull/1), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), [#5](https://github.com/ummarvali/AgenticSoftware/pull/5), [#7](https://github.com/ummarvali/AgenticSoftware/pull/7), [#9](https://github.com/ummarvali/AgenticSoftware/pull/9) — left unmerged on
 purpose), `demo/` (the deterministic output for the mandatory requirement)
 and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 `scripts/snapshot_run.py`, which scrubs anything key-shaped).
@@ -576,6 +577,7 @@ description is the full engineering summary: task plan, decisions, validation, r
 | Greenfield — the mandatory URL shortener | [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [#1](https://github.com/ummarvali/AgenticSoftware/pull/1) | 5/5 checks, 28 tests, new project under `generated/` |
 | Brownfield — rate limiting on `demo/` | [#2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), then [#4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [#5](https://github.com/ummarvali/AgenticSoftware/pull/5) | 6/6 checks; code review of #3 found two security gaps; #5, after the prompt fix, closes both |
 | Ambiguous — "Make the app faster." on `demo/` (ambiguity detected by the agent, not declared; this run predates the clarification round, so it built on its assumptions) | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
+| Ambiguous, clarified — the same requirement after the clarification round | [issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8): questions asked, `/answer` given → [#9](https://github.com/ummarvali/AgenticSoftware/pull/9) | nothing built until answered; then 6/6 checks, 28 tests, a focused cache + delete change matching the answers |
 
 **Offline, reproducible without a key:** see [`examples/README.md`](examples/README.md) for
 inputs, commands, and expected outputs for the **greenfield**, **brownfield**, and
@@ -891,7 +893,8 @@ Not enforced in this prototype (documented, would be required for production):
   issue and the `/answer` run builds without asking again, so a poor answer is caught at the
   acceptance review, not by a second round. Before this round existed, "Make the app faster."
   ([PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7)) was built on the model's assumptions and came out broader than a
-  reviewer would want — the case the round exists for.
+  reviewer would want — the case the round exists for. With the round, the same requirement
+  ([issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8) → [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9)) was asked about first and produced a focused change matching the answers.
 - **"Scalable" is designed, not load-tested.** The scaling path (sharded store, cache,
   async analytics, stateless replicas) is in each design and its trade-offs; the generated
   slice is a single process and no load test is run.
@@ -935,7 +938,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
-| Evidence of the model-driven path | pipeline runs → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
+| Evidence of the model-driven path | pipeline runs → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7), [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Controlled autonomy in a team setting | `.github/workflows/agent.yml` — request via issue form, spend approval, agent run in CI, acceptance approval, PR on acceptance |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
