@@ -250,11 +250,14 @@ jobs:
           git add -A
           title=$(printf '%s\n' "$REQUIREMENT" | head -n 1 | cut -c1-70)
           git commit -m "Agent proposal ${RUN_ID}: ${title}"
-          git push origin "$branch"
+          # The branch belongs to this run, so a re-run of this job replaces it.
+          git push --force origin "$branch"
           cp "runs/${RUN_ID}/artifacts/ENGINEERING_SUMMARY.md" pr-body.md
           if [ -n "$ISSUE" ]; then printf '\n\nRequested in #%s.\n' "$ISSUE" >> pr-body.md; fi
-          pr_url=$(gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
-            --title "Agent: ${title}" --body-file pr-body.md)
+          # Re-run safe: reuse the pull request if an earlier attempt already opened it.
+          pr_url=$(gh pr view "$branch" --json url --jq .url 2>/dev/null) ||
+            pr_url=$(gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
+              --title "Agent: ${title}" --body-file pr-body.md)
           echo "Pull request: $pr_url"
           if [ -n "$ISSUE" ]; then
             gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
