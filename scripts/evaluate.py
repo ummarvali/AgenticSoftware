@@ -105,7 +105,13 @@ def _recorded_cost(calls):
 
 def _retest(run_dir: Path, record: dict) -> tuple[bool, str]:
     """Re-execute a recorded run's tests *now*: greenfield runs from their artifacts;
-    change-mode runs on a copy of their target repository with the change applied."""
+    change-mode runs on a copy of their target repository with the change applied.
+
+    The recorded services were generated and gate-validated on Linux; generated code is
+    not guaranteed to be portable (e.g. Windows file-locking semantics), so on Windows
+    the re-test is skipped and reported as such rather than counted as a failure."""
+    if os.name == "nt" and not os.environ.get("AGENTIC_RETEST_ON_WINDOWS"):
+        return True, "skipped on Windows (recorded services were generated and validated on Linux)"
     from agentic_sdlc.models import Artifact
     from agentic_sdlc.tools import CodeRunner
     from agentic_sdlc.tools import repo as repo_tool
@@ -125,7 +131,7 @@ def _retest(run_dir: Path, record: dict) -> tuple[bool, str]:
             shutil.copytree(arts, target, ignore=shutil.ignore_patterns("__pycache__", "*.db"))
         result = CodeRunner().run_unittests(target)
     ran = next((l for l in result.output.splitlines() if l.startswith("Ran ")), "no tests ran")
-    return result.ok, ran
+    return result.ok, ran + (" - OK" if result.ok else " - FAILED")
 
 
 def recorded_live_runs():
@@ -159,6 +165,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+    for stream in (sys.stdout, sys.stderr):   # consistent output on non-UTF-8 consoles (Windows)
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     os.chdir(ROOT)
 
     rows = []
@@ -196,7 +207,7 @@ def main() -> int:
                   f"fallbacks={l['fallbacks']} {l['fallback_stages'] or ''}  "
                   f"model-authored code: {'yes' if l['model_authored_code'] else 'no'}  {l['duration_s']}s")
             ok, ran = l["retested_now"]
-            print(f"{'':<22} re-tested now: {ran} — {'OK' if ok else 'FAILED'}")
+            print(f"{'':<22} re-tested now: {ran}")
     print(f"\nRESULT: {'ALL EXPECTATIONS MET' if report['all_ok'] else 'EXPECTATION FAILURES'}")
     return 0 if report["all_ok"] else 1
 

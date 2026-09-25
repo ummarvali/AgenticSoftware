@@ -738,6 +738,10 @@ Not enforced in this prototype (documented, would be required for production):
   than its slice implements (an async queue, a required header, role checks); the coverage
   table verifies endpoints, and the tests verify behaviour the model chose to test. Each
   live summary says so. A Critic agent is the next step.
+- Generated code is validated on the platform the agent runs on. The recorded services were
+  generated and gate-validated on Linux; CI re-tests them on Linux, and on Windows the
+  scorecard reports that re-test as skipped (generated code is not guaranteed to be portable —
+  some of it assumes POSIX file semantics). The agent itself is tested on Linux and Windows.
 - The model's own tests are the behavioural evidence; they cover main paths, not edge cases
   (e.g. the recorded shortener accepts a TTL but its cache path does not re-check expiry).
 - Human checkpoints are **console-based** in this prototype (no web UI).
