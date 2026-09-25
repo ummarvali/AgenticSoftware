@@ -1,8 +1,11 @@
 openapi: 3.0.3
 info:
   title: URL Shortener API
-  version: 1.0.0
-  description: Shorten URLs, redirect, and read click analytics.
+  version: 1.1.0
+  description: >
+    Shorten URLs, redirect, and read click analytics. Endpoints are protected by
+    a fixed-window rate limiter (per-IP or per-API-key); responses carry
+    X-RateLimit-* headers and return 429 once the limit is exceeded.
 servers:
   - url: http://localhost:8000
 paths:
@@ -33,6 +36,7 @@ paths:
                   long_url: { type: string }
                   expires_at: { type: number, nullable: true }
         "400": { description: Invalid URL or alias }
+        "429": { description: Rate limit exceeded }
   /{code}:
     get:
       summary: Redirect to the original URL
@@ -44,6 +48,7 @@ paths:
       responses:
         "302": { description: Redirect to the long URL }
         "404": { description: Unknown or expired code }
+        "429": { description: Rate limit exceeded }
   /api/stats/{code}:
     get:
       summary: Click analytics for a code
@@ -64,8 +69,64 @@ paths:
                   long_url: { type: string }
                   clicks: { type: integer }
         "404": { description: Unknown code }
+        "429": { description: Rate limit exceeded }
   /healthz:
     get:
       summary: Liveness probe
       responses:
         "200": { description: Service is up }
+  /metrics:
+    get:
+      summary: Rate limiting metrics
+      responses:
+        "200":
+          description: Total/blocked request counters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_requests: { type: integer }
+                  blocked_requests: { type: integer }
+                  per_client_blocks: { type: object }
+  /admin/rate-limit-config:
+    get:
+      summary: Read the current rate limit configuration
+      responses:
+        "200":
+          description: Current config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  limit: { type: integer }
+                  window_seconds: { type: number }
+                  allowlist: { type: array, items: { type: string } }
+    put:
+      summary: Update rate limit configuration without a redeploy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer }
+                window_seconds: { type: number }
+                allowlist: { type: array, items: { type: string } }
+      responses:
+        "200": { description: Updated config }
+  /admin/rate-limit-reset:
+    post:
+      summary: Reset rate limit counters for one client, or everyone
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                key: { type: string, example: "ip:127.0.0.1" }
+      responses:
+        "200": { description: Counters reset }
