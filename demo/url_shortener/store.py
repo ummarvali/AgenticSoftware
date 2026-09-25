@@ -104,17 +104,43 @@ CREATE INDEX IF NOT EXISTS idx_clicks_code ON clicks(code);
 
 
 class SqliteStore:
-    """Durable store backed by SQLite (standard library, no external service)."""
+    """Durable store backed by SQLite (standard library, no external service).
 
-    def __init__(self, path: str = ":memory:") -> None:
+    ``autocommit`` controls whether every write (link creation, click
+    recording) is flushed to disk immediately (the default, matching the
+    original behaviour) or deferred and flushed in batches via
+    :meth:`flush`/:meth:`set_autocommit`. Batching avoids paying an fsync-like
+    commit cost on every single write, which is the dominant cost for
+    write-heavy workloads (e.g. click recording) against SQLite; it is
+    exposed as an explicit, reversible toggle so callers who need immediate
+    durability keep it, while the performance toolkit can enable batching for
+    measurable throughput gains.
+    """
+
+    def __init__(self, path: str = ":memory:", autocommit: bool = True) -> None:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self.autocommit = autocommit
+
+    def set_autocommit(self, enabled: bool) -> None:
+        """Enable/disable immediate commits. Turning it back on flushes pending writes."""
+        self.autocommit = enabled
+        if enabled:
+            self.flush()
+
+    def flush(self) -> None:
+        """Force any pending, uncommitted writes to disk."""
+        self._conn.commit()
+
+    def _maybe_commit(self) -> None:
+        if self.autocommit:
+            self._conn.commit()
 
     def next_id(self) -> int:
         cur = self._conn.execute("INSERT INTO id_seq DEFAULT VALUES")
-        self._conn.commit()
+        self._maybe_commit()
         return int(cur.lastrowid)
 
     def create_link(self, record: LinkRecord) -> LinkRecord:
@@ -122,7 +148,7 @@ class SqliteStore:
             "INSERT INTO links(code, long_url, created_at, expires_at) VALUES (?, ?, ?, ?)",
             (record.code, record.long_url, record.created_at, record.expires_at),
         )
-        self._conn.commit()
+        self._maybe_commit()
         return record
 
     def get(self, code: str) -> Optional[LinkRecord]:
@@ -141,7 +167,7 @@ class SqliteStore:
             "INSERT INTO clicks(code, ts, referrer, user_agent) VALUES (?, ?, ?, ?)",
             (code, ts, referrer, user_agent),
         )
-        self._conn.commit()
+        self._maybe_commit()
 
     def click_count(self, code: str) -> int:
         row = self._conn.execute(
