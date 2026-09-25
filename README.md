@@ -110,7 +110,7 @@ Pipeline runs on GitHub, plus four earlier live runs from the CLI, checked in ex
 
 | What you want to see | Where |
 | --- | --- |
-| **The pipeline, end to end on GitHub**: the mandatory requirement run in Actions — spend approved, live console, 5/5 checks with 28 model-written tests, 88.5k tokens (~$0.67), accepted, pull request opened | [Actions run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (code under `generated/20260925-115009-176/`) |
+| **The mandatory use case, end to end on GitHub** — issue → spend approved → no blocking questions, so it built straight away → 5/5 checks with 29 model-written tests (unit + integration over real HTTP), 4 model calls, 75.6k tokens (~$0.71) → accepted → pull request. Exercised by running it: create 201, a repeated URL returns the same code, custom alias, 302 redirects, metadata, analytics by referrer, TTL expiry → 410, private-network targets rejected, rate limits → 429, `/healthz` and `/metrics`. Review also found one defect its own tests missed (§9) | [issue #10](https://github.com/ummarvali/AgenticSoftware/issues/10) → [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36147946721) → [pull request #11](https://github.com/ummarvali/AgenticSoftware/pull/11) (code under `generated/20260925-143110-307/`) |
 | **A brownfield change requested through the issue form** — "add rate limiting" to `demo/`: 6/6 checks, the change validated with `demo/`'s 20 existing tests plus 21 new ones, 49k tokens (~$0.37). Code review of the PR then found two security gaps the automated gates cannot see (an unauthenticated admin endpoint; a client-chosen `Authorization` value used as the quota key) — which is what the acceptance gate and PR review are for, and it led to a SECURITY rule in the code-generation prompts | [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [pull request #3](https://github.com/ummarvali/AgenticSoftware/pull/3) |
 | **The same request after that finding** — re-run once the SECURITY rule was in the prompts: 6/6 checks, 36 tests (20 existing + 16 new); limits are configuration only (no admin endpoint), and a client key counts only if it matches a server-side list, else the peer address is used. Verified by running it: the 4th request over a limit of 3 gets 429 with `Retry-After`, rotating fake keys stays at 429, `/admin/*` is 404. ~54k tokens (~$0.41) | [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [pull request #5](https://github.com/ummarvali/AgenticSoftware/pull/5) |
 | **An ambiguous requirement through the issue form** — "Make the app faster." against `demo/`: the analysis records its interpretation as explicit assumptions (backend/API and database are the targets; no profiling data exists yet; code-level changes only, no new infrastructure), and the change set is validated 6/6 with 35 tests. The model chose a broad reading — a profiling toolkit plus an opt-in batched-commit mode in the store, not a default speed-up — which is exactly what the acceptance review is there to judge (see §9) | [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [pull request #7](https://github.com/ummarvali/AgenticSoftware/pull/7) |
@@ -340,7 +340,7 @@ python -m pip install -e ".[dev]"; pytest        # or with pytest
 **Run on a real model (Claude):**
 
 The system was developed and exercised end to end against a real Anthropic key; the pipeline
-runs ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7), [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
+runs ([PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7), [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
 this repository and none is needed to run, test or evaluate it** — without a key the same
 pipeline runs on the deterministic engine. To reproduce a live run yourself:
 
@@ -406,7 +406,7 @@ Override the root with `--output-root`. Nothing is written anywhere else.
 
 This is the same model as a CI job workspace or an artifact store: the outcome is a
 *reviewable proposal*, not a change already applied. `runs/` is git-ignored — the
-**recorded evidence** is the pipeline pull requests ([#1](https://github.com/ummarvali/AgenticSoftware/pull/1), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), [#5](https://github.com/ummarvali/AgenticSoftware/pull/5), [#7](https://github.com/ummarvali/AgenticSoftware/pull/7), [#9](https://github.com/ummarvali/AgenticSoftware/pull/9) — left unmerged on
+**recorded evidence** is the pipeline pull requests ([#11](https://github.com/ummarvali/AgenticSoftware/pull/11), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), [#5](https://github.com/ummarvali/AgenticSoftware/pull/5), [#7](https://github.com/ummarvali/AgenticSoftware/pull/7), [#9](https://github.com/ummarvali/AgenticSoftware/pull/9) — left unmerged on
 purpose), `demo/` (the deterministic output for the mandatory requirement)
 and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 `scripts/snapshot_run.py`, which scrubs anything key-shaped).
@@ -415,8 +415,8 @@ and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 
 ## 3. The mandatory use case, end to end
 
-**Primary evidence:** the pipeline [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1)
-— the mandatory requirement through GitHub Actions, on `claude-sonnet-5`.
+**Primary evidence:** [issue #10](https://github.com/ummarvali/AgenticSoftware/issues/10) → the pipeline [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36147946721) → [pull request #11](https://github.com/ummarvali/AgenticSoftware/pull/11)
+— the mandatory requirement through GitHub Actions, on `claude-sonnet-5`, with the current code.
 
 **What the agents do, step by step.** Condensed from the recorded event log and metrics of a
 live run of this requirement ([`examples/llm-run/result.json`](examples/llm-run/)); in the
@@ -449,20 +449,20 @@ pipeline the same lines stream in the *agent run → Run the agent* console:
 [observability] 371s | 29 tasks, 8 parallel levels, 23 reused | 4 model calls, 52.9k tokens (~$0.49)
 ```
 
-**What the model generated in the pipeline run** ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), code under
-`generated/20260925-115009-176/`; 28 tests pass, and the service was exercised over HTTP:
-create 201, redirect 302, analytics, 400/404/409 errors, SQLite tables):
+**What the model generated in the pipeline run** ([PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11), code under
+`generated/20260925-143110-307/`; its 29 tests pass, and the service was exercised over HTTP):
 
 | Artifact | Purpose |
 | --- | --- |
-| `urlshortener/storage.py` | SQLite persistence: urls, users, click events, blacklist |
-| `urlshortener/shortcode.py`, `validation.py` | base62 short codes with collision checks; URL and alias validation |
-| `urlshortener/cache.py` | in-process cache for the redirect path |
-| `urlshortener/service.py` | create / resolve / delete / analytics logic |
-| `urlshortener/api.py`, `server.py` | HTTP API (standard library), configurable host, port and database path |
-| `openapi.yaml` | the API contract (OpenAPI 3.0.3) |
-| `tests/test_service.py`, `tests/test_api.py` | 16 unit tests + 12 API tests over real HTTP |
-| `README.md`, `ENGINEERING_SUMMARY.md` | how to run it (curl per endpoint); the engineering summary (also the PR description) |
+| `urlshortener/storage.py` | SQLite (WAL) persistence: urls, analytics events, API keys |
+| `urlshortener/shortcode.py`, `validator.py` | base62 short codes; URL validation (http/https, length, private-network targets rejected) and alias rules |
+| `urlshortener/cache.py` | in-process LRU cache on the redirect path |
+| `urlshortener/ratelimit.py` | token-bucket rate limiting per API key or client address |
+| `urlshortener/service.py` | create (repeated URL returns the same code), resolve with expiry, analytics queue and background writer, expiry sweeper |
+| `urlshortener/server.py`, `config.py` | HTTP API (standard library), `/healthz`, `/metrics`, everything configurable by environment variables |
+| `openapi.yaml` | the API contract (OpenAPI 3.0.3), also served at `/openapi.json` |
+| `tests/test_all.py` | 29 tests: validation, short codes, rate limiter, service logic, and API integration over real HTTP |
+| `README.md`, `ENGINEERING_SUMMARY.md` | how to run it and every endpoint; the engineering summary (also the PR description) |
 
 ### Offline fallback (no key)
 
@@ -574,7 +574,7 @@ description is the full engineering summary: task plan, decisions, validation, r
 
 | Scenario | Issue → pull request | Outcome |
 | --- | --- | --- |
-| Greenfield — the mandatory URL shortener | [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [#1](https://github.com/ummarvali/AgenticSoftware/pull/1) | 5/5 checks, 28 tests, new project under `generated/` |
+| Greenfield — the mandatory URL shortener | [#10](https://github.com/ummarvali/AgenticSoftware/issues/10) → [#11](https://github.com/ummarvali/AgenticSoftware/pull/11) | built without questions; 5/5 checks, 29 tests, new project under `generated/` |
 | Brownfield — rate limiting on `demo/` | [#2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), then [#4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [#5](https://github.com/ummarvali/AgenticSoftware/pull/5) | 6/6 checks; code review of #3 found two security gaps; #5, after the prompt fix, closes both |
 | Ambiguous — "Make the app faster." on `demo/` (ambiguity detected by the agent, not declared; this run predates the clarification round, so it built on its assumptions) | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
 | Ambiguous, clarified — the same requirement after the clarification round | [issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8): questions asked, `/answer` given → [#9](https://github.com/ummarvali/AgenticSoftware/pull/9) | nothing built until answered; then 6/6 checks, 28 tests, a focused cache + delete change matching the answers |
@@ -898,9 +898,16 @@ Not enforced in this prototype (documented, would be required for production):
 - **"Scalable" is designed, not load-tested.** The scaling path (sharded store, cache,
   async analytics, stateless replicas) is in each design and its trade-offs; the generated
   slice is a single process and no load test is run.
-- **Pipeline pull requests are not re-tested by CI**: pull requests opened with the default
-  `GITHUB_TOKEN` do not trigger workflows. Their code was compiled, scanned and tested in the
-  agent run; a GitHub App token would make CI run on them too.
+- **CI on pipeline pull requests needs a maintainer's click.** GitHub starts CI on a pull request
+  opened by the Actions bot only after a maintainer presses *Approve and run*, and CI tests the
+  system itself (and `demo/`), not a new project under `generated/` — that code was compiled,
+  scanned and tested in the agent run. A GitHub App token would start CI without the click.
+- **The model's own tests are not a complete test.** In [PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11) a rejected
+  duplicate alias leaves its SQLite write transaction open, so the next write from another
+  request waits 10 s and returns 500. All 29 of its tests pass because none of them runs that
+  sequence; the maintainer's own run found it, and it is recorded on the PR. This is what the
+  acceptance review is for, and what a critic agent (adversarial tests before acceptance) would
+  automate.
 - Generated code is validated on the platform the agent runs on. The recorded services were
   generated and gate-validated on Linux; CI re-tests them on Linux, and on Windows the
   scorecard reports that re-test as skipped (generated code is not guaranteed to be portable —
@@ -938,7 +945,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
-| Evidence of the model-driven path | pipeline runs → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7), [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
+| Evidence of the model-driven path | pipeline runs → [PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7), [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Controlled autonomy in a team setting | `.github/workflows/agent.yml` — request via issue form, spend approval, agent run in CI, acceptance approval, PR on acceptance |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
@@ -972,7 +979,7 @@ Not enforced in this prototype (documented, would be required for production):
 ## 12. Operating this in production — the SRE view
 
 The agent system is the application; a pipeline is how it is run and operated by a team.
-**That pipeline is implemented and exercised in this repository** (example: [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1)):
+**That pipeline is implemented and exercised in this repository** (example: [issue #10](https://github.com/ummarvali/AgenticSoftware/issues/10) → [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36147946721) → [pull request #11](https://github.com/ummarvali/AgenticSoftware/pull/11)):
 [`.github/workflows/agent.yml`](.github/workflows/agent.yml).
 
 ```
@@ -1033,8 +1040,8 @@ One-time setup (repository Settings): create the `agent-run` environment (requir
 mandatory, since issues can start runs; deployment branches: `main` only) and add
 `ANTHROPIC_API_KEY` as its environment secret; create the
 `agent-acceptance` environment with required reviewers; allow GitHub Actions to create pull
-requests (Actions → General → Workflow permissions). Pull requests opened with the default
-`GITHUB_TOKEN` do not trigger other workflows — a GitHub App token would let CI run on them
+requests (Actions → General → Workflow permissions). CI on a pull request opened by the Actions
+bot starts once a maintainer presses *Approve and run*; a GitHub App token would start it
 automatically.
 
 - **Hosting & triggers:** here the job runs on a GitHub-hosted runner; the root `Dockerfile`
