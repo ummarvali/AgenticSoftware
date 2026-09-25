@@ -114,8 +114,10 @@ def _print_report(result) -> None:
               f"reused={run.get('reused', 0)} gates={run['gates']}")
     llm = (result.metrics or {}).get("llm")
     if llm and llm.get("calls"):
-        print(f"LLM usage      : {len(llm['calls'])} calls, {llm['total_tokens']} tokens, "
-              f"~${llm['est_cost_usd']:.4f}, {llm['fallbacks']} fallbacks")
+        cost = llm.get("est_cost_usd")
+        cost_s = f"~${cost:.4f}" if cost is not None else "cost n/a (model price unknown)"
+        print(f"LLM usage      : {llm.get('api_calls', len(llm['calls']))} calls, "
+              f"{llm['total_tokens']} tokens, {cost_s}, {llm['fallbacks']} fallbacks")
         for c in llm["calls"]:
             if c.get("fallback"):
                 print(f"  fallback     : {c['stage']} -> deterministic ({c.get('error', '')[:140]})")

@@ -32,10 +32,13 @@ class LLMClient(Protocol):
                  timeout: float = 30.0, max_tokens: int = 4096) -> LLMResponse: ...
 
 
-# Approximate USD list price per 1M tokens (input, output), matched by longest model-id
-# prefix. Only used for the cost estimate and the spend circuit breaker. Unknown models
-# are priced at a Sonnet-class rate ($3/$15), which over- rather than under-estimates
-# for most models.
+# Published USD list price per 1M tokens (input, output), as of September 2026, matched by
+# longest model-id prefix. Token counts are always reported (they come from the API); a
+# dollar figure is reported ONLY when the model that actually ran is in this table or its
+# price is supplied via AGENTIC_LLM_PRICE_PER_MTOK="<input>,<output>" — never guessed.
+# Prices change: the override exists so a reviewer on another model or tier can report
+# their own rate.
+PRICE_TABLE_AS_OF = "2026-09"
 _PRICES: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
@@ -52,7 +55,10 @@ _PRICES: dict[str, tuple[float, float]] = {
     "claude-opus-4-5": (5.00, 25.00),
     "claude-sonnet-5": (2.00, 10.00),
 }
-_DEFAULT_PRICE = (3.00, 15.00)
+# The spend circuit breaker must still work for an unpriced model: it assumes the most
+# expensive rate in the table, so it trips early rather than late. This rate is never
+# reported as a cost.
+_BREAKER_FALLBACK_PRICE = max(_PRICES.values(), key=lambda p: p[1])
 
 
 def _temperature(default: float | None) -> float | None:
@@ -118,11 +124,33 @@ def _call(fn, kwargs: dict, *, optional: tuple[str, ...] = ("temperature",)):
         raise
 
 
-def _price_for(model: str) -> tuple[float, float]:
-    """Longest matching prefix wins (``gpt-4o-mini`` must not be priced as ``gpt-4o``)."""
+def _env_price() -> tuple[float, float] | None:
+    raw = os.environ.get("AGENTIC_LLM_PRICE_PER_MTOK", "").strip()
+    if not raw:
+        return None
+    try:
+        pin, pout = (float(x) for x in raw.split(","))
+        return pin, pout
+    except ValueError:
+        return None
 
+
+def _price_for(model: str) -> tuple[float, float] | None:
+    """The model's price per 1M tokens, or ``None`` when it is not known.
+
+    ``AGENTIC_LLM_PRICE_PER_MTOK`` wins; otherwise the longest matching prefix in the
+    table (``gpt-4o-mini`` must not be priced as ``gpt-4o``)."""
+
+    override = _env_price()
+    if override:
+        return override
     matches = [p for p in _PRICES if model.startswith(p)]
-    return _PRICES[max(matches, key=len)] if matches else _DEFAULT_PRICE
+    return _PRICES[max(matches, key=len)] if matches else None
+
+
+def _price_source() -> str:
+    return ("AGENTIC_LLM_PRICE_PER_MTOK" if _env_price()
+            else f"published list price table ({PRICE_TABLE_AS_OF})")
 
 
 class TruncatedOutput(RuntimeError):
@@ -180,17 +208,38 @@ class MetricsCollector:
         return sum(1 for c in self.calls if c.error and not c.fallback)
 
     @property
-    def est_cost_usd(self) -> float:
+    def unpriced_models(self) -> list[str]:
+        return sorted({c.model for c in self.calls
+                       if (c.prompt_tokens or c.completion_tokens) and _price_for(c.model) is None})
+
+    def _cost(self, breaker: bool) -> float:
         total = 0.0
         for c in self.calls:
-            pin, pout = _price_for(c.model)
-            total += (c.prompt_tokens / 1_000_000) * pin
-            total += (c.completion_tokens / 1_000_000) * pout
+            price = _price_for(c.model) or (_BREAKER_FALLBACK_PRICE if breaker else (0.0, 0.0))
+            total += (c.prompt_tokens / 1_000_000) * price[0]
+            total += (c.completion_tokens / 1_000_000) * price[1]
         return round(total, 6)
+
+    @property
+    def est_cost_usd(self) -> float | None:
+        """Estimated spend, or ``None`` if any model used has no known price."""
+        return None if self.unpriced_models else self._cost(breaker=False)
+
+    @property
+    def breaker_cost_usd(self) -> float:
+        """Spend as the circuit breaker sees it: unknown prices at the highest table rate."""
+        return self._cost(breaker=True)
+
+    def cost_text(self) -> str:
+        cost = self.est_cost_usd
+        if cost is None:
+            return (f"cost n/a (no known price for {', '.join(self.unpriced_models)}; "
+                    "set AGENTIC_LLM_PRICE_PER_MTOK=in,out)")
+        return f"~${cost:.4f}"
 
     def summary(self) -> str:
         return (f"{self.api_calls} LLM calls, {self.total_tokens} tokens, "
-                f"~${self.est_cost_usd:.4f}, {self.retries} retries, {self.fallbacks} fallbacks")
+                f"{self.cost_text()}, {self.retries} retries, {self.fallbacks} fallbacks")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -200,6 +249,10 @@ class MetricsCollector:
             "retries": self.retries,
             "fallbacks": self.fallbacks,
             "est_cost_usd": self.est_cost_usd,
+            "pricing": ({"source": _price_source(),
+                         "per_mtok_usd": {m: _price_for(m) for m in sorted({c.model for c in self.calls})}}
+                        if self.est_cost_usd is not None else
+                        {"source": "unknown", "unpriced_models": self.unpriced_models}),
         }
 
 

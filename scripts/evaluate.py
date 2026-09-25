@@ -86,6 +86,17 @@ def run_scenario(name, requirement, overrides, expect, tmp):
     }
 
 
+def _recorded_cost(calls):
+    """Recompute the estimate from the recorded token counts with the current price table,
+    so a stale stored figure is never shown; ``None`` when a model's price is unknown."""
+    from agentic_sdlc.llm.client import CallRecord, MetricsCollector
+    m = MetricsCollector()
+    for c in calls:
+        m.record(CallRecord(c["stage"], c["model"], c.get("prompt_tokens", 0),
+                            c.get("completion_tokens", 0), c.get("latency_s", 0.0)))
+    return m.est_cost_usd
+
+
 def recorded_live_runs():
     out = []
     for d in sorted((ROOT / "examples").glob("llm-run*")):
@@ -104,7 +115,7 @@ def recorded_live_runs():
             "tasks": run.get("tasks_ok"), "reused": run.get("reused"), "repairs": run.get("repairs"),
             "llm_calls": llm.get("api_calls", len(calls)), "retries": llm.get("retries", 0),
             "tokens": llm.get("total_tokens"),
-            "est_cost_usd": llm.get("est_cost_usd"), "fallbacks": llm.get("fallbacks"),
+            "est_cost_usd": _recorded_cost(calls), "fallbacks": llm.get("fallbacks"),
             "fallback_stages": [c["stage"] for c in calls if c.get("fallback")],
             "duration_s": run.get("duration_s"),
             "model_authored_code": not any(c["stage"] == "codegen" and c.get("fallback") for c in calls),
@@ -146,7 +157,9 @@ def main() -> int:
         for l in live:
             print(f"{l['recorded_run']:<22} domain={l['domain']}  {l['validation']}  artifacts={l['artifacts']}  "
                   f"tasks={l['tasks']} reused={l['reused']} repairs={l['repairs']}")
-            print(f"{'':<22} llm: {l['llm_calls']} calls, {l['tokens']} tokens, ~${l['est_cost_usd']:.4f}, "
+            cost = l["est_cost_usd"]
+            cost_s = f"~${cost:.4f}" if cost is not None else "cost n/a"
+            print(f"{'':<22} llm: {l['llm_calls']} calls, {l['tokens']} tokens, {cost_s}, "
                   f"retries={l['retries']} "
                   f"fallbacks={l['fallbacks']} {l['fallback_stages'] or ''}  "
                   f"model-authored code: {'yes' if l['model_authored_code'] else 'no'}  {l['duration_s']}s")

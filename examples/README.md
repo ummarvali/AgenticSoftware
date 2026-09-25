@@ -81,7 +81,7 @@ Three runs of the same pipeline driven by a real model (`--provider claude`), ch
 In each folder:
 
 - `result.json` → `metrics.llm`: per-stage calls (`analyze`, `decompose`, `design`,
-  `codegen`), prompt/completion tokens, latency, estimated cost, retries, and whether any
+  `codegen`), model, prompt/completion tokens, latency, estimated cost (with the price source), retries, and whether any
   stage fell back to the deterministic engine and why.
 - `artifacts/` → the code and tests the model authored, accepted only after the sandbox
   gate (static scan, compile, its own tests; a rejected bundle gets one repair pass with the

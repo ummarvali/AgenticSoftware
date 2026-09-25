@@ -333,7 +333,22 @@ class HardeningTests(unittest.TestCase):
         from agentic_sdlc.llm.client import _price_for
         self.assertEqual(_price_for("claude-sonnet-5"), (2.00, 10.00))
         self.assertEqual(_price_for("gpt-4o-mini-2024-07-18"), (0.15, 0.60))
-        self.assertEqual(_price_for("some-unknown-model"), (3.00, 15.00))
+        self.assertIsNone(_price_for("some-unknown-model"))       # never guessed
+
+    def test_unknown_model_reports_tokens_but_no_cost(self):
+        import os
+        from agentic_sdlc.llm.client import CallRecord, MetricsCollector
+        m = MetricsCollector()
+        m.record(CallRecord("analyze", "some-new-model", 1000, 2000, 1.0))
+        self.assertEqual(m.total_tokens, 3000)
+        self.assertIsNone(m.est_cost_usd)
+        self.assertIn("cost n/a", m.summary())
+        self.assertGreater(m.breaker_cost_usd, 0)               # the breaker still counts it
+        os.environ["AGENTIC_LLM_PRICE_PER_MTOK"] = "1,2"
+        try:
+            self.assertAlmostEqual(m.est_cost_usd, 0.005)       # 1000*1/1e6 + 2000*2/1e6
+        finally:
+            os.environ.pop("AGENTIC_LLM_PRICE_PER_MTOK", None)
 
     def test_fenced_reply_with_inner_fences_parses(self):
         from agentic_sdlc.llm.llm_provider import _coerce_json

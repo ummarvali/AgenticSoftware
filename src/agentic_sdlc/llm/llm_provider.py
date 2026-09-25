@@ -216,7 +216,7 @@ class LLMProvider(ReasoningProvider):
 
     def _budget_check(self, stage: str) -> None:
         calls = len(self.metrics.calls)
-        cost = self.metrics.est_cost_usd
+        cost = self.metrics.breaker_cost_usd
         if calls >= self._max_calls:
             raise BudgetExceeded(f"{stage}: LLM call budget exhausted ({calls}/{self._max_calls})")
         if cost >= self._max_cost_usd:

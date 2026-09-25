@@ -37,8 +37,11 @@ python3 -m agentic_sdlc --provider claude --file examples/greenfield.txt
 python3 -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
 ```
 
-A run takes ~4–6 minutes and costs roughly $0.25–0.40 (Claude Sonnet 5 at its $2 / $10 per
-million-token list price; the per-call tokens and the estimate are in `result.json`). The
+A run takes ~4–6 minutes. The recorded runs used `claude-sonnet-5` and cost $0.27–0.38 each
+at its published $2 / $10 per-million-token price. Cost depends on the model: token counts
+are always reported (from the API), while a dollar figure is shown only when the model's
+price is known (a dated table in `llm/client.py`, or `AGENTIC_LLM_PRICE_PER_MTOK="in,out"`);
+otherwise the run reports `cost n/a` instead of guessing. The
 model analyses the requirement, plans a 15–30-task graph, designs the service, writes the
 code **and** its tests; the code is accepted only after it passes a static safety scan,
 compiles, and its own tests pass in a sandbox (one repair pass with the real error output
@@ -266,7 +269,8 @@ python3 -m agentic_sdlc --provider openai --file examples/greenfield.txt
 ```
 
 A circuit breaker guards against runaway spend: `AGENTIC_LLM_MAX_CALLS` (default 200) and
-`AGENTIC_LLM_MAX_COST_USD` (default 10.00) — far above a legitimate run (4–8 calls, well under a dollar);
+`AGENTIC_LLM_MAX_COST_USD` (default 10.00) — far above a legitimate run (4–8 calls, well under a dollar;
+for a model with no known price the breaker assumes the most expensive rate in the table, so it trips early);
 if tripped, remaining stages degrade to the deterministic engine and the record says so.
 
 Keys are read **only** from the environment and are never written to disk or to
@@ -636,7 +640,7 @@ through the firm's gateway, with allow-listed servers.
 | Output quality | validation checks passed; artifact set has no duplicates; summary carries risks and a validation approach |
 | Task adherence | outcome matches the scenario's expectation (pass / halt); every planned task completed or explicitly reused; expected retries / repairs / degradations observed; brownfield impact analysed |
 | Tool correctness | the compile + test gate ran (validation result present); sandbox path guard, timeout and secret scrubbing are unit-tested in `tests/test_tools.py` and `tests/test_llm_provider.py` |
-| Operational efficiency | duration, tasks, retries, repairs, degradations, parallel levels, reused tasks; for recorded live runs: calls, tokens, estimated cost, fallback stages, and whether the code was model-authored |
+| Operational efficiency | duration, tasks, retries, repairs, degradations, parallel levels, reused tasks; for recorded live runs: calls, tokens, estimated cost (recomputed from the recorded tokens with the current price table; `n/a` if the model's price is unknown), fallback stages, and whether the code was model-authored |
 
 Six offline scenarios are scored deterministically (greenfield, brownfield, ambiguous → repair,
 retry recovery, optional-task degradation, required-task halt). Recorded live-model runs under

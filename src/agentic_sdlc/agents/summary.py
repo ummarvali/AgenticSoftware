@@ -111,7 +111,9 @@ class SummaryAgent(Agent):
         if llm is not None and llm.calls:
             m["llm_calls"] = len(llm.calls)
             m["llm_tokens"] = llm.total_tokens
-            m["llm_est_cost_usd"] = round(llm.est_cost_usd, 4)
+            m["llm_calls"] = llm.api_calls
+            m["llm_est_cost_usd"] = (round(llm.est_cost_usd, 4) if llm.est_cost_usd is not None
+                                     else "n/a (model price unknown)")
             m["llm_fallbacks"] = [f"{c.stage}: {c.error}" for c in llm.calls if c.fallback]
         return m
 
