@@ -7,11 +7,20 @@ trade-offs, and the assumptions and limitations the run operated under.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from agentic_sdlc.agents.base import Agent, AgentDecision
 from agentic_sdlc.models import Artifact, EngineeringSummary, Task
 from agentic_sdlc.orchestrator.state import AgentContext
+
+_GATES_IN_PIPELINE = (
+    "Run in the GitHub Actions pipeline: the in-run gates were automatic (they never accept "
+    "a failing report); human approval happens at the pipeline's GitHub Environment gates "
+    "- spend before the run, acceptance of this result after it.")
+_GATES_LOCAL = (
+    "Run locally: human checkpoints are console prompts (--interactive) or automatic; "
+    "the GitHub Actions pipeline adds named approvals through GitHub Environments.")
 
 
 class SummaryAgent(Agent):
@@ -152,7 +161,8 @@ class SummaryAgent(Agent):
         common = [
             "Generated service targets clarity and the standard library over "
             "framework features (e.g. no async, no ORM).",
-            "Human checkpoints are console-based in this prototype.",
+            (_GATES_IN_PIPELINE if os.environ.get("GITHUB_ACTIONS") == "true"
+             else _GATES_LOCAL),
             "The validation sandbox is an isolated-mode subprocess with a timeout and a "
             "scrubbed environment, not a network-isolated container or separate OS user.",
         ]

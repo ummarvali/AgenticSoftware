@@ -83,10 +83,11 @@ pipeline is built and secured: [§12](#12-operating-this-in-production--the-sre-
 
 ### Already recorded — inspect without running anything
 
-Four live runs, produced by the final code, are checked in exactly as they came out of the agent:
+A pipeline run on GitHub, plus four live runs produced by the final code and checked in exactly as they came out of the agent:
 
 | What you want to see | Where |
 | --- | --- |
+| **The pipeline, end to end on GitHub**: the mandatory requirement run in Actions — spend approved, live console, 5/5 checks with 28 model-written tests, 88.5k tokens (~$0.67), accepted, pull request opened | [Actions run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (code under `generated/20260925-115009-176/`) |
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
@@ -797,7 +798,7 @@ Not enforced in this prototype (documented, would be required for production):
   some of it assumes POSIX file semantics). The agent itself is tested on Linux and Windows.
 - The model's own tests are the behavioural evidence; they cover main paths, not edge cases
   (e.g. the recorded shortener accepts a TTL but its cache path does not re-check expiry).
-- Human checkpoints are **console-based** in this prototype (no web UI).
+- Human checkpoints: console prompts when run locally; in the GitHub pipeline, named approvals through GitHub Environments (spend before a run, acceptance after it). There is no dedicated web UI.
 - Brownfield change mode: the repo scan ranks files by term overlap with the requirement (a
   heuristic, not a static-analysis/impact engine); the model sees a relevance-ranked subset
   of the repository (~60 KB), so a change spanning a large codebase may miss context;
@@ -862,7 +863,7 @@ Not enforced in this prototype (documented, would be required for production):
 ## 12. Operating this in production — the SRE view
 
 The agent system is the application; a pipeline is how it is run and operated by a team.
-**That pipeline is implemented in this repository:**
+**That pipeline is implemented and exercised in this repository** (example: [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1)):
 [`.github/workflows/agent.yml`](.github/workflows/agent.yml).
 
 ```

@@ -99,5 +99,5 @@ Approach:
 ## Limitations
 - Offline deterministic engine covers known domains richly and unknown domains with a generic scaffold; it is not a general code synthesizer.
 - Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).
-- Human checkpoints are console-based in this prototype.
+- Run locally: human checkpoints are console prompts (--interactive) or automatic; the GitHub Actions pipeline adds named approvals through GitHub Environments.
 - The validation sandbox is an isolated-mode subprocess with a timeout and a scrubbed environment, not a network-isolated container or separate OS user.
