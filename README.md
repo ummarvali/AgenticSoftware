@@ -11,74 +11,74 @@ engineering summary, all under **controlled autonomy** (agents act, humans appro
 > persistence, and analytics."* — and it also handles greenfield, brownfield, and
 > ambiguous requirements generally.
 
-- **LLM-first, never LLM-dependent** — the model (Claude / OpenAI / Azure) drives the
-  reasoning; the system degrades to a deterministic engine on any error, with retries,
-  timeouts, and token/cost/latency **observability**. The default needs no key.
+- **Model-driven by design** — a live LLM (Claude / OpenAI / Azure / any OpenAI-compatible
+  endpoint) analyses the requirement, plans the task graph, designs the architecture and
+  **authors the code and tests**. That is the primary mode, and the one the recorded
+  evidence in [`examples/llm-run*/`](examples/) was produced with.
+- **Never LLM-dependent** — every model stage is wrapped with timeouts, bounded retries and a
+  per-stage fallback to a deterministic engine, with token/cost/latency **observability**.
+  The same fallback lets a reviewer run and test everything without a key.
 - **The system verifies its own output** — generated code is compiled and its tests are
   executed before a human is asked to accept the run.
 
 ---
 
-## ⚡ TL;DR — run the URL shortener now (no agent needed)
+## ⚡ TL;DR — for the reviewer
 
-The runnable deliverable is committed under [`demo/`](demo/). After cloning:
-
-```bash
-cd demo
-python -m url_shortener.server            # serves http://127.0.0.1:8000
-# in another shell:
-curl -X POST http://127.0.0.1:8000/api/shorten -H "Content-Type: application/json" -d "{\"url\": \"https://example.com/a/very/long/path\"}"
-curl -i http://127.0.0.1:8000/<code>          # 302 redirect
-curl http://127.0.0.1:8000/api/stats/<code>   # click analytics
-
-python -m unittest discover -s tests -v   # 20 tests, all pass
-```
-
-Or as a container (no Python needed on the host) — and the **agent itself** ships as an image too:
-
-```bash
-docker build -t agentic-sdlc .
-docker run --rm -v "$PWD/runs:/app/runs" agentic-sdlc --file examples/greenfield.txt
-```
-
-The demo service:
-
-```bash
-docker build -t url-shortener demo
-docker run --rm -p 8000:8000 url-shortener
-# durable store: -e SHORTENER_STORE=sqlite -e SHORTENER_DB_PATH=/data/s.db -v "$PWD/data:/data"
-```
-
-`demo/` is the **exact output the agent generated** for the mandatory requirement — checked
-in so a reviewer can run the app immediately. To watch the agent *produce* it from scratch,
-see [§2](#2-quick-start-setup-instructions).
-
-**Reviewer's map — where the evidence is, in reading order:**
-
-| What you want to see | Where |
-| --- | --- |
-| The runnable URL shortener (offline, deterministic engine) | [`demo/`](demo/) — code, tests, `openapi.yaml`, `ENGINEERING_SUMMARY.md` |
-| The same requirement authored by a **live model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service, its own tests) + `result.json` (tokens, cost, per-stage fallbacks) |
-| A different domain, same pipeline (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
-| The hardest case: a **non-Python target** (Go) — the design records Go, the validated slice is Python, and the **codegen repair loop** fixed a bundle the sandbox first rejected | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) — see `metrics.llm.calls` in `result.json` |
-| The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | any `ENGINEERING_SUMMARY.md` above |
-| How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
-| Scorecard across every scenario (runs in CI) | `python scripts/evaluate.py` |
-
-**Reviewer's 5-minute run** (no key, no third-party packages):
+**Primary mode: the agents on a live model.** This is what the brief asks for and how the
+system was built and tested:
 
 ```bash
 git clone https://github.com/ummarvali/AgenticSoftware && cd AgenticSoftware
-export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
-python3 -m unittest discover -s tests                   # 54 tests, OK
-python3 -m agentic_sdlc --file examples/greenfield.txt  # watch the agents plan, build, validate, report
-python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + 3 recorded live runs
-cat runs/*/artifacts/ENGINEERING_SUMMARY.md             # the engineering outcome for the run above
+pip install -e ".[anthropic]"                      # or ".[llm]" for OpenAI / Azure / Gemini
+export ANTHROPIC_API_KEY="<your key>"              # PowerShell: $env:ANTHROPIC_API_KEY = "<your key>"
+export PYTHONPATH=src
+python3 -m agentic_sdlc --provider claude --file examples/greenfield.txt
+python3 -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
 ```
 
-The recorded live runs are inspected the same way: `cat examples/llm-run/artifacts/ENGINEERING_SUMMARY.md`,
-and each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how).
+A run takes ~4–6 minutes and ~$0.10–0.16. The model analyses the requirement, plans a
+20–30-task graph, designs the service, writes the code **and** its tests; the code is
+accepted only after it compiles and its own tests pass in a sandbox (one repair pass with
+the real error output if they don't). The result lands in `runs/<run-id>/`, ending with
+`artifacts/ENGINEERING_SUMMARY.md`. **No key is committed anywhere in this repository.**
 
+**No key to hand? The evidence is already recorded.** Three live runs, produced by the
+final code, are checked in exactly as they came out of `runs/`:
+
+| What you want to see | Where |
+| --- | --- |
+| The mandatory URL shortener, **authored by the model** and sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
+| A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
+| The hardest case: a **Go** target — the design records Go, the validated slice is Python, and the **codegen repair loop** fixed a bundle the sandbox first rejected | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) — see `metrics.llm.calls` in `result.json` |
+| The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
+| How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
+
+Each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how),
+and its tests pass from the checkout: `cd examples/llm-run/artifacts && python3 -m unittest discover -s tests`.
+
+**Fallback mode — no key, no third-party packages.** The same agents, gates and validator,
+with the deterministic engine in place of the model (this is also what CI runs):
+
+```bash
+export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
+python3 -m unittest discover -s tests                   # 54 tests, OK
+python3 -m agentic_sdlc --file examples/greenfield.txt  # plan, build, validate, report — offline
+python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 3 recorded live runs
+```
+
+The fallback's output for the mandatory requirement is committed as [`demo/`](demo/) — a
+service you can start in ten seconds:
+
+```bash
+cd demo && python -m url_shortener.server          # http://127.0.0.1:8000
+curl -X POST http://127.0.0.1:8000/api/shorten -H "Content-Type: application/json" -d "{\"url\": \"https://example.com/a/very/long/path\"}"
+curl -i http://127.0.0.1:8000/<code>               # 302 redirect
+curl http://127.0.0.1:8000/api/stats/<code>        # click analytics
+```
+
+Containers: `docker build -t agentic-sdlc .` (the agent; pass `-e ANTHROPIC_API_KEY` for the
+live mode) and `docker build -t url-shortener demo` (the demo service).
 
 ---
 
@@ -183,6 +183,10 @@ Three principles shape the implementation:
 **Requirement:** Python 3.10+ (developed on 3.12; CI runs 3.10 and 3.12 on Linux and
 Windows). No third-party packages are needed for the core system — the model SDKs are
 optional extras.
+
+**Primary mode — live model.** Set a key and pass `--provider claude` (or `openai`);
+the commands are under **Run on a real model** further down this section. Without a
+key, every command in this section runs on the deterministic fallback.
 
 **One-command narrated demo** (all scenarios + fault injection + monitoring):
 
