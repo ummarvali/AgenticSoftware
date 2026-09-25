@@ -1,117 +1,273 @@
 openapi: 3.0.3
 info:
-  title: Generated API
-  version: 1.0.0
-  description: "Synthesized by the Repair agent from the API design; lists only endpoints the generated slice serves."
+  title: Inventory Service API
+  version: "1.0.0"
+  description: >
+    REST inventory service tracking stock per product/warehouse, with
+    optimistic concurrency, low-stock alerts and audit history.
+servers:
+  - url: http://localhost:8000
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Warehouse:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        location: { type: string }
+        created_at: { type: string }
+    Product:
+      type: object
+      properties:
+        id: { type: string }
+        sku: { type: string }
+        name: { type: string }
+        description: { type: string }
+    StockItem:
+      type: object
+      properties:
+        warehouse_id: { type: string }
+        product_id: { type: string }
+        quantity: { type: integer }
+        version: { type: integer }
+        threshold: { type: integer, nullable: true }
+        updated_at: { type: string }
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        warehouse_id: { type: string }
+        product_id: { type: string }
+        threshold: { type: integer }
+        quantity_at_trigger: { type: integer }
+        status: { type: string, enum: [ACTIVE, RESOLVED] }
+        created_at: { type: string }
+        resolved_at: { type: string, nullable: true }
 paths:
-  # design-level endpoint(s) not in this slice: GET /openapi.json
-  "/items":
+  /warehouses:
     post:
-      summary: "Register a new inventory item"
+      summary: Create a warehouse
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                location: { type: string }
       responses:
-        "201":
-          description: "{id, sku, name, metadata, created_at}"
+        "201": { description: created, content: {application/json: {schema: {$ref: "#/components/schemas/Warehouse"}}} }
+        "400": { description: invalid input, content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}} }
+        "401": { description: unauthorized }
+        "403": { description: forbidden }
     get:
-      summary: "List items with pagination/filtering by sku/name"
+      summary: List warehouses
       responses:
         "200":
-          description: "{items:[...], page, page_size, total}"
-  "/items/{item_id}":
-    parameters:
-      - name: "item_id"
-        in: path
-        required: true
-        schema: { type: string }
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: {$ref: "#/components/schemas/Warehouse"} }
+        "401": { description: unauthorized }
+  /warehouses/{warehouse_id}:
     get:
-      summary: "Get item details"
+      summary: Get a warehouse
+      parameters:
+        - { name: warehouse_id, in: path, required: true, schema: {type: string} }
       responses:
-        "200":
-          description: "{id, sku, name, metadata, created_at}"
-  "/warehouses":
+        "200": { description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Warehouse"}}} }
+        "404": { description: not found, content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}} }
+  /products:
     post:
-      summary: "Register a new warehouse"
+      summary: Create a product/SKU
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku, name]
+              properties:
+                sku: { type: string }
+                name: { type: string }
+                description: { type: string }
       responses:
-        "201":
-          description: "{id, code, name, location}"
+        "201": { description: created, content: {application/json: {schema: {$ref: "#/components/schemas/Product"}}} }
+        "400": { description: invalid input }
+        "409": { description: sku already exists }
     get:
-      summary: "List all warehouses with inventory summary (total qty, distinct items, low-stock count)"
+      summary: List products
       responses:
         "200":
-          description: "{warehouses:[{id, code, name, total_quantity, item_count, low_stock_count}], page, page_size, total}"
-  "/stock/add":
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: {$ref: "#/components/schemas/Product"} }
+  /products/{product_id}:
+    get:
+      summary: Get a product
+      parameters:
+        - { name: product_id, in: path, required: true, schema: {type: string} }
+      responses:
+        "200": { description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Product"}}} }
+        "404": { description: not found }
+  /stock:
     post:
-      summary: "Add stock quantity for item in a warehouse (creates stock row if absent)"
+      summary: Add stock (create or increase quantity) for a product at a warehouse
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warehouse_id, product_id, quantity]
+              properties:
+                warehouse_id: { type: string }
+                product_id: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                threshold: { type: integer, nullable: true }
+                actor: { type: string }
+                reason: { type: string }
       responses:
-        "200":
-          description: "{item_id, warehouse_id, quantity, updated_at}"
-  "/stock/adjust":
+        "201": { description: created/updated, content: {application/json: {schema: {$ref: "#/components/schemas/StockItem"}}} }
+        "400": { description: invalid input }
+        "404": { description: warehouse or product not found }
+  /stock/adjust:
     post:
-      summary: "Adjust stock (positive or negative delta) with audit trail and idempotency"
+      summary: Adjust (increment/decrement) stock, idempotent via Idempotency-Key header
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warehouse_id, product_id, delta]
+              properties:
+                warehouse_id: { type: string }
+                product_id: { type: string }
+                delta: { type: integer }
+                actor: { type: string }
+                reason: { type: string }
       responses:
         "200":
-          description: "{item_id, warehouse_id, quantity, delta_applied, adjustment_id, alert_triggered}"
-  "/stock/{item_id}/{warehouse_id}":
-    parameters:
-      - name: "item_id"
-        in: path
-        required: true
-        schema: { type: string }
-      - name: "warehouse_id"
-        in: path
-        required: true
-        schema: { type: string }
+          description: adjusted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/StockItem"
+                  - type: object
+                    properties: { alert_triggered: { type: boolean } }
+        "400": { description: invalid input (e.g. resulting negative stock) }
+        "404": { description: stock item not found }
+        "409": { description: idempotency key conflict or concurrent modification }
+  /stock/{warehouse_id}/{product_id}:
     get:
-      summary: "Query current stock level for an item in a specific warehouse"
+      summary: Get current stock level for product at warehouse
+      parameters:
+        - { name: warehouse_id, in: path, required: true, schema: {type: string} }
+        - { name: product_id, in: path, required: true, schema: {type: string} }
       responses:
-        "200":
-          description: "{item_id, warehouse_id, quantity, low_stock_threshold, updated_at}"
-  "/stock/{item_id}":
-    parameters:
-      - name: "item_id"
-        in: path
-        required: true
-        schema: { type: string }
+        "200": { description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/StockItem"}}} }
+        "404": { description: not found }
+  /products/{product_id}/stock:
     get:
-      summary: "Query aggregated stock levels across all warehouses for an item"
+      summary: Get stock levels across all warehouses for a product
+      parameters:
+        - { name: product_id, in: path, required: true, schema: {type: string} }
       responses:
-        "200":
-          description: "{item_id, total_quantity, by_warehouse:[{warehouse_id, quantity}]}"
-  "/stock":
+        "200": { description: ok }
+        "404": { description: product not found }
+  /warehouses/{warehouse_id}/stock:
     get:
-      summary: "List stock records with pagination and filtering by item_id/warehouse_id/low_stock_only"
+      summary: Get all stock levels within a warehouse
+      parameters:
+        - { name: warehouse_id, in: path, required: true, schema: {type: string} }
       responses:
-        "200":
-          description: "{records:[...], page, page_size, total}"
-  "/stock/{item_id}/{warehouse_id}/threshold":
-    parameters:
-      - name: "item_id"
-        in: path
-        required: true
-        schema: { type: string }
-      - name: "warehouse_id"
-        in: path
-        required: true
-        schema: { type: string }
+        "200": { description: ok }
+        "404": { description: warehouse not found }
+  /thresholds/{warehouse_id}/{product_id}:
     put:
-      summary: "Configure low-stock threshold for an item/warehouse pair"
+      summary: Configure the low-stock threshold for a product/warehouse pair
+      parameters:
+        - { name: warehouse_id, in: path, required: true, schema: {type: string} }
+        - { name: product_id, in: path, required: true, schema: {type: string} }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [threshold]
+              properties: { threshold: { type: integer, minimum: 0 } }
       responses:
-        "200":
-          description: "{item_id, warehouse_id, low_stock_threshold}"
-  "/alerts/low-stock":
+        "200": { description: ok }
+        "400": { description: invalid input }
+        "404": { description: not found }
+  /thresholds/default:
+    put:
+      summary: Configure the global default low-stock threshold
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [default_threshold]
+              properties: { default_threshold: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: ok }
+        "400": { description: invalid input }
+  /alerts:
     get:
-      summary: "List current low-stock conditions (stock below threshold) across items/warehouses"
+      summary: List active/resolved low-stock alerts
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [ACTIVE, RESOLVED] }
       responses:
         "200":
-          description: "{alerts:[{item_id, warehouse_id, quantity, threshold}], page, page_size, total}"
-  "/alerts":
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: {$ref: "#/components/schemas/Alert"} }
+  /alerts/{alert_id}/resolve:
+    post:
+      summary: Resolve a low-stock alert
+      parameters:
+        - { name: alert_id, in: path, required: true, schema: {type: string} }
+      responses:
+        "200": { description: resolved }
+        "404": { description: alert not found }
+  /stock/{warehouse_id}/{product_id}/history:
     get:
-      summary: "List historical triggered alerts with pagination/filtering by status/date"
+      summary: Audit trail of stock adjustments for a product/warehouse pair
+      parameters:
+        - { name: warehouse_id, in: path, required: true, schema: {type: string} }
+        - { name: product_id, in: path, required: true, schema: {type: string} }
       responses:
-        "200":
-          description: "{alerts:[...], page, page_size, total}"
-  "/audit/adjustments":
+        "200": { description: ok }
+        "404": { description: not found }
+  /metrics:
     get:
-      summary: "Query audit history of stock adjustments with pagination/filtering"
+      summary: Plain-text counters (requests, adjustments, alerts)
+      security: []
       responses:
-        "200":
-          description: "{records:[{id, item_id, warehouse_id, delta, reason, actor, resulting_quantity, created_at}], page, page_size, total}"
+        "200": { description: ok }

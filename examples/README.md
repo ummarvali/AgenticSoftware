@@ -79,9 +79,9 @@ Four runs of the same pipeline driven by a real model (`--provider claude`), che
 | Folder | Requirement | What it demonstrates |
 | --- | --- | --- |
 | `llm-run/` | the mandatory URL shortener | model-authored, SQLite-backed service with its own tests; design↔implementation coverage table |
-| `llm-run-inventory/` | inventory service with low-stock alerts | a different domain through the same agents, gates and validator; the coverage table shows 14/15 designed endpoints served (the design-only one, `/openapi.json`, is stated as a limitation) |
+| `llm-run-inventory/` | inventory service with low-stock alerts | a different domain through the same agents, gates and validator; the coverage table shows which designed endpoints the slice serves |
 | `llm-run-brownfield/` | "Add rate limiting to the existing URL shortener API" with `--repo demo` | **change mode**: the model returns only the changed files; `CHANGES.diff` is the reviewable patch; demo's existing tests plus the new ones pass on a copy of `demo/` with the change applied; `demo/` is untouched |
-| `llm-run-go-card-validator/` | a **Go** microservice validating card transactions | non-Python target: the design records Go, the validated slice is Python (stated as a limitation), with 15 model-written tests passing in the sandbox |
+| `llm-run-go-card-validator/` | a **Go** microservice validating card transactions | non-Python target: the design records Go, the validated slice is Python (stated as a limitation), with its model-written tests passing in the sandbox |
 
 In each folder:
 
@@ -91,9 +91,8 @@ In each folder:
 - `artifacts/` → the code and tests the model authored, accepted only after the sandbox
   gate (static scan, compile, its own tests; a rejected bundle gets one repair pass with the
   sandbox output; if `metrics.llm` shows a `codegen` fallback, the verified template replaced
-  it — the record is honest either way). `openapi.yaml` and `README.md` are synthesized from
-  the model's design by the Repair agent when the bundle leaves them out; the README says how
-  to start the service.
+  it — the record is honest either way). The model writes `openapi.yaml` and `README.md` as
+  part of the bundle; if it leaves either out, the Repair agent synthesizes it from the design.
 - `artifacts/ENGINEERING_SUMMARY.md` → plan, rationale (design decisions + the agents'
   decision log), **design ↔ implementation coverage**, validation, risks derived from the
   produced slice, the model's trade-offs (prototype vs production), assumptions, limitations.

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -102,6 +103,31 @@ def _recorded_cost(calls):
     return m.est_cost_usd
 
 
+def _retest(run_dir: Path, record: dict) -> tuple[bool, str]:
+    """Re-execute a recorded run's tests *now*: greenfield runs from their artifacts;
+    change-mode runs on a copy of their target repository with the change applied."""
+    from agentic_sdlc.models import Artifact
+    from agentic_sdlc.tools import CodeRunner
+    from agentic_sdlc.tools import repo as repo_tool
+
+    arts = run_dir / "artifacts"
+    with tempfile.TemporaryDirectory() as tmp:
+        if (arts / "CHANGES.diff").exists():
+            repo = (record.get("requirement") or {}).get("repo_path") or "demo"
+            if not (ROOT / repo).is_dir():
+                return False, f"target repository {repo!r} not found"
+            changes = [Artifact(p.relative_to(arts).as_posix(), p.read_text(encoding="utf-8"))
+                       for p in sorted(arts.rglob("*")) if p.is_file() and "__pycache__" not in p.parts
+                       and p.name not in ("CHANGES.diff", "ENGINEERING_SUMMARY.md")]
+            target = repo_tool.materialize_overlay(ROOT / repo, changes, Path(tmp) / "overlay")
+        else:
+            target = Path(tmp) / "copy"
+            shutil.copytree(arts, target, ignore=shutil.ignore_patterns("__pycache__", "*.db"))
+        result = CodeRunner().run_unittests(target)
+    ran = next((l for l in result.output.splitlines() if l.startswith("Ran ")), "no tests ran")
+    return result.ok, ran
+
+
 def recorded_live_runs():
     out = []
     for d in sorted((ROOT / "examples").glob("llm-run*")):
@@ -124,6 +150,7 @@ def recorded_live_runs():
             "fallback_stages": [c["stage"] for c in calls if c.get("fallback")],
             "duration_s": run.get("duration_s"),
             "model_authored_code": not any(c["stage"] == "codegen" and c.get("fallback") for c in calls),
+            "retested_now": _retest(d, r),
         })
     return out
 
@@ -140,7 +167,7 @@ def main() -> int:
             rows.append(run_scenario(name, req, dict(overrides), expect, tmp))
     live = recorded_live_runs()
     report = {"offline_scenarios": rows, "recorded_live_runs": live,
-              "all_ok": all(r["ok"] for r in rows)}
+              "all_ok": all(r["ok"] for r in rows) and all(l["retested_now"][0] for l in live)}
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -168,6 +195,8 @@ def main() -> int:
                   f"retries={l['retries']} "
                   f"fallbacks={l['fallbacks']} {l['fallback_stages'] or ''}  "
                   f"model-authored code: {'yes' if l['model_authored_code'] else 'no'}  {l['duration_s']}s")
+            ok, ran = l["retested_now"]
+            print(f"{'':<22} re-tested now: {ran} — {'OK' if ok else 'FAILED'}")
     print(f"\nRESULT: {'ALL EXPECTATIONS MET' if report['all_ok'] else 'EXPECTATION FAILURES'}")
     return 0 if report["all_ok"] else 1
 

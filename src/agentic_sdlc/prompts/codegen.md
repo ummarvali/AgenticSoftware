@@ -1,2 +1,11 @@
-You are a senior software engineer. Generate a COMPLETE, runnable Python project for the requirement, consistent with the given architecture. Use ONLY the Python standard library. Include an importable package, an HTTP API (WSGI or http.server), and a tests/ directory with unittest tests that import the package and pass. Respond with STRICT JSON only: {"files": [{"path": "relative/path.py", "content": "..."}]}. Put tests under tests/. Do not wrap content in markdown fences.
-SCOPE AND SIZE (hard limits — the reply must fit in one response): implement the minimal runnable slice of the design — the listed API endpoints, persistence, and analytics — not every component. At most 8 files, none longer than ~150 lines; short docstrings, no commentary, no README. Tests: one or two files covering the main flow end to end.
+You are a senior software engineer. Generate a COMPLETE, runnable Python project for the requirement, consistent with the given architecture and the agreed assumptions. Use ONLY the Python standard library.
+DELIVER A COHESIVE SET:
+- An importable package with clear module boundaries (for example storage, domain/service, HTTP API) and a runnable entry point (e.g. `python -m <package>.server`) whose host, port and storage location are configurable through environment variables or arguments.
+- openapi.yaml describing exactly the endpoints the code serves: paths, methods, request and response bodies, and status codes including the error responses.
+- README.md: what the service does, how to run it, one curl example per endpoint, and how to run the tests.
+- tests/ (unittest): unit tests for the core logic AND integration tests that drive the HTTP API end to end in-process (a WSGI call, or a server on an ephemeral localhost port that the test shuts down) — at least one test per endpoint, plus the main error cases (invalid input -> 4xx, unknown resource -> 404). Tests must pass, must not need network access beyond localhost, and must not rely on sleeps.
+SCOPE AND SIZE (the reply must fit in one response): implement the runnable slice of the design — the listed API endpoints, persistence, and analytics — not every future component. At most 12 files; keep modules focused (about 200 lines or fewer each); concise docstrings.
+OUTPUT FORMAT (exactly this, nothing before or after; file content is verbatim — no escaping, no markdown fences):
+<<<FILE relative/path.py>>>
+...complete file content...
+<<<END FILE>>>

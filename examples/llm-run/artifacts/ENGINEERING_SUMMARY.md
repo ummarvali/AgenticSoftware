@@ -5,56 +5,60 @@
 **Validation:** 5/5 checks passed
 
 ## Implementation Plan
-- Level 0: D1 (design)
-- Level 1: D2 (design, reused), D3 (design, reused)
-- Level 2: D4 (design, reused), C1 (code), C2 (code, reused), D5 (design, reused), D6 (design, reused)
-- Level 3: C3 (code, reused), C4 (code, reused), C5 (code, reused), C9 (code, reused), T1 (tests), T2 (tests, reused), DOC2 (docs)
-- Level 4: C6 (code, reused), C8 (code, reused), DOC3 (docs, reused), T4 (tests, reused)
-- Level 5: C7 (code, reused)
-- Level 6: DOC1 (docs, reused), T3 (tests, reused), T5 (tests, reused)
-- Level 7: V1 (validate), V2 (validate, reused), V3 (validate, reused)
-- Level 8: S1 (summary)
+- Level 0: design_requirements (design)
+- Level 1: design_architecture (design, reused)
+- Level 2: design_data_model (design, reused), design_short_code_algorithm (design, reused)
+- Level 3: code_id_generator_service (code), code_storage_layer (code, reused), design_api_contract (design, reused), design_analytics_pipeline (design, reused), design_caching_strategy (design, reused)
+- Level 4: code_redirect_service (code, reused), code_shorten_api (code, reused), design_security (design, reused)
+- Level 5: code_analytics_capture (code, reused), code_caching_layer (code, reused), code_security_controls (code, reused)
+- Level 6: code_analytics_processor (code, reused), tests_security (tests), tests_unit (tests, reused), code_expiry_cleanup (code, reused)
+- Level 7: code_stats_api (code, reused), code_deployment_infra (code, reused)
+- Level 8: tests_integration (tests, reused), docs_api_reference (docs)
+- Level 9: tests_load_performance (tests, reused)
+- Level 10: docs_architecture (docs, reused)
+- Level 11: validate_data_durability (validate), validate_functional (validate, reused), validate_performance_slas (validate, reused)
+- Level 12: summary_delivery (summary)
 
 ## Rationale (key decisions & agent decision log)
-- Target production architecture is cloud-agnostic and containerized, using PostgreSQL for durable storage and Redis for caching/rate-limiting at scale, per stated assumptions; the runnable prototype substitutes SQLite for PostgreSQL and an in-process dict for Redis, preserving the same access patterns for straightforward migration
-- Prototype is implemented as a single Python process using only stdlib (http.server, sqlite3, threading, queue) — no external frameworks or brokers
-- Short codes are generated via base62 encoding of the SQLite auto-increment row id, guaranteeing uniqueness without a collision-retry loop for auto-generated codes; custom aliases are checked for existing uniqueness via a UNIQUE constraint and retried/rejected on conflict
-- Redirect path reads from an in-memory LRU cache first, falling back to SQLite on miss, to approximate the low-latency caching requirement described for Redis in production
-- Click analytics are captured synchronously into a Python queue.Queue at redirect time (non-blocking) and flushed by a background thread every few seconds into SQLite, approximating async event-processing/near-real-time analytics described in the requirements
-- Rate limiting is implemented as an in-memory token-bucket keyed by API key or client IP; this is process-local and resets on restart, which is acceptable for the single-process prototype
-- API key authentication is optional; anonymous creation is allowed as specified, with ownership recorded only when a key is supplied
-- URL validation checks scheme (http/https only) and well-formed host to reduce malicious/malformed submissions before persistence
-- Expiration is enforced at redirect time by comparing expires_at against current time; expired codes return 410 Gone instead of redirecting
+- Implement the prototype as a single Python process using only http.server (BaseHTTPRequestHandler) for the HTTP layer, avoiding external frameworks per implementation target
+- Use SQLite (via sqlite3 stdlib module) as the durable store for urls, api_keys, click_events, and url_stats tables, with WAL mode enabled for concurrent read/write
+- Generate short codes via a monotonic auto-increment counter (SQLite AUTOINCREMENT or in-memory atomic counter with periodic checkpoint) encoded in base62, guaranteeing uniqueness without a coordination service; custom aliases checked for uniqueness via UNIQUE constraint before insert
+- Decouple redirect path from analytics writes by pushing click events into an in-memory thread-safe deque; a dedicated background thread drains this queue and writes to SQLite, ensuring redirect latency is not blocked by analytics I/O
+- Cache short_code->long_url lookups in an in-memory dict with a simple TTL/LRU eviction policy to reduce SQLite reads on hot keys, refreshed on write/update/delete
+- Implement lightweight API-key auth as a simple table lookup against the X-API-Key header for management endpoints (create/update/delete/stats-for-owned); redirect endpoint remains fully public and unauthenticated
+- Implement rate limiting as an in-memory token-bucket keyed by API key or client IP, checked before processing write endpoints, resetting on a rolling time window
+- Validate submitted URLs using urllib.parse to enforce http/https scheme, reasonable length limits, and a static blocklist of known-malicious domains/patterns before persisting
+- Run expiration sweep and analytics retention purge in a periodic background thread (threading.Timer loop) that deactivates expired urls and deletes click_events older than the retention window
+- Target production architecture (documented, not built in this slice): Node.js/Python/Java backend behind a load balancer, PostgreSQL for durable mappings, Redis for caching hot redirects, Kafka/RabbitMQ for async analytics ingestion, and a Snowflake-like distributed ID generator for horizontal write scaling
 - Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).
 - Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default
-- Architect: reuse - architecture already committed; 'D2' is covered by it
-- Architect: reuse - architecture already committed; 'D3' is covered by it
-- Architect: reuse - architecture already committed; 'D4' is covered by it
+- Architect: reuse - architecture already committed; 'design_architecture' is covered by it
+- Architect: reuse - architecture already committed; 'design_data_model' is covered by it
+- Architect: reuse - architecture already committed; 'design_short_code_algorithm' is covered by it
 - CodeGenerator: generate - no code yet → generate from the design
-- Architect: reuse - architecture already committed; 'D5' is covered by it
-- Architect: reuse - architecture already committed; 'D6' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C2' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C3' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C4' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C5' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C9' is covered by it
+- Architect: reuse - architecture already committed; 'design_api_contract' is covered by it
+- Architect: reuse - architecture already committed; 'design_analytics_pipeline' is covered by it
+- Architect: reuse - architecture already committed; 'design_caching_strategy' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_storage_layer' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_redirect_service' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_shorten_api' is covered by it
+- Architect: reuse - architecture already committed; 'design_security' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_analytics_capture' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_caching_layer' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_security_controls' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_analytics_processor' is covered by it
 - TestGenerator: generate-tests - generate unit + integration tests for the code
+- TestGenerator: reuse - test suite already generated; 'tests_unit' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_expiry_cleanup' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_stats_api' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code_deployment_infra' is covered by it
+- TestGenerator: reuse - test suite already generated; 'tests_integration' is covered by it
 - DocGenerator: generate-docs - generate README and architecture docs
-- TestGenerator: reuse - test suite already generated; 'T2' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C6' is covered by it
-- DocGenerator: defer - docs stage already ran and produced nothing; the Repair agent synthesizes docs from the design after validation
-- CodeGenerator: reuse - code already generated from the current design; 'C8' is covered by it
-- TestGenerator: reuse - test suite already generated; 'T4' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'C7' is covered by it
-- DocGenerator: defer - docs stage already ran and produced nothing; the Repair agent synthesizes docs from the design after validation
-- TestGenerator: reuse - test suite already generated; 'T3' is covered by it
-- TestGenerator: reuse - test suite already generated; 'T5' is covered by it
+- TestGenerator: reuse - test suite already generated; 'tests_load_performance' is covered by it
+- DocGenerator: reuse - documentation already generated; 'docs_architecture' is covered by it
 - Validator: validate - compile code, run tests, check contract & docs
-- Validator: reuse - artifact set unchanged since the last report; 'V2' needs no re-run
-- Validator: reuse - artifact set unchanged since the last report; 'V3' needs no re-run
-- SummaryWriter: summarize - consolidate the run into the final summary
-- Repair: repair - auto-fixing: api contract present, documentation present
-- Validator: validate - compile code, run tests, check contract & docs
+- Validator: reuse - artifact set unchanged since the last report; 'validate_functional' needs no re-run
+- Validator: reuse - artifact set unchanged since the last report; 'validate_performance_slas' needs no re-run
 - SummaryWriter: summarize - consolidate the run into the final summary
 
 
@@ -62,21 +66,25 @@
 
 | Method | Path | Summary | Status | In generated slice |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/urls` | Create a shortened URL, optional custom alias, expiration, and API key | 201 | yes |
-| `GET` | `/{short_code}` | Redirect to the original long URL and asynchronously record a click event | 302 | yes |
-| `GET` | `/api/urls/{short_code}/analytics` | Retrieve click analytics summary and recent events for a short URL | 200 | yes |
-| `GET` | `/api/urls/{short_code}` | Retrieve metadata for a short URL (owner, expiration, creation time) without redirecting | 200 | yes |
-| `DELETE` | `/api/urls/{short_code}` | Delete/deactivate a short URL (requires matching API key if one was set at creation) | 200 | yes |
+| `POST` | `/api/urls` | Create a short URL from a long URL, with optional custom alias and expiration | 201 | yes |
+| `POST` | `/api/urls/bulk` | Create multiple short URLs in one request | 201 | yes |
+| `GET` | `/{short_code}` | Redirect to the original long URL; records async click event; returns 404/410 if not found/expired | 302 | yes |
+| `GET` | `/api/urls/{short_code}/stats` | Retrieve analytics/stats for a given short URL | 200 | yes |
+| `PUT` | `/api/urls/{short_code}` | Update an existing short URL's target, alias metadata, or expiration (owner only) | 200 | yes |
+| `DELETE` | `/api/urls/{short_code}` | Delete (deactivate) an existing short URL (owner only) | 200 | yes |
+| `POST` | `/api/keys` | Issue a new API key for URL management (lightweight registration) | 201 | yes |
 
 ## Generated Artifacts
-- urlshortener/__init__.py
-- urlshortener/storage.py
-- urlshortener/core.py
-- urlshortener/app.py
-- urlshortener/server.py
+- shortener/__init__.py
+- shortener/storage.py
+- shortener/validation.py
+- shortener/auth.py
+- shortener/analytics.py
+- shortener/service.py
+- shortener/handler.py
+- shortener/server.py
 - openapi.yaml
-- tests/__init__.py
-- tests/test_service.py
+- tests/test_all.py
 - README.md
 
 ## Validation
@@ -86,7 +94,7 @@
 | Check | Result | Detail |
 | --- | --- | --- |
 | code compiles | PASS | all files compiled |
-| tests pass | PASS | Ran 5 tests in 0.872s — OK |
+| tests pass | PASS | Ran 24 tests in 1.231s — OK |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
 | static safety scan | PASS | no findings |
@@ -103,16 +111,16 @@ Approach:
 
 ## Run Monitoring
 - provider: llm
-- tasks_completed: 29
+- tasks_completed: 28
 - retries: 0
-- repairs: 1
+- repairs: 0
 - degradations: 0
-- parallel_levels: 6
-- reused_tasks: 21
+- parallel_levels: 8
+- reused_tasks: 23
 - human_gates_passed_before_summary: 2
 - llm_calls: 4
-- llm_tokens: 31664
-- llm_est_cost_usd: 0.281
+- llm_tokens: 52937
+- llm_est_cost_usd: 0.4868
 - llm_fallbacks: []
 
 ## Risks
@@ -121,20 +129,24 @@ Approach:
 - Generated tests cover core paths; add load/security tests before production.
 
 ## Trade-offs
-- Prototype uses SQLite with a single writer connection guarded by a lock; production would use PostgreSQL (or similar) with connection pooling and read replicas to support the stated ~1000 req/s and horizontal scaling
-- Prototype's in-memory LRU cache and rate-limiter state live in one process and are lost on restart; production would use a shared distributed cache such as Redis so caching and rate-limiting remain consistent across many horizontally scaled instances
-- Prototype's background aggregator thread and queue.Queue provide simple async batching; production would use a durable message broker (e.g., Kafka/SQS) and a dedicated analytics pipeline/warehouse to handle billions of events reliably and support daily aggregation at scale
-- Prototype geolocation/device parsing is done with basic User-Agent string matching and no external IP-geo database; production would integrate a maintained GeoIP dataset/service for accurate geolocation
-- Prototype runs single-process with GIL-bound concurrency, capping throughput well below 1000 req/s; production would run multiple stateless containers behind a load balancer for true horizontal scalability
-- Prototype stores full click-event rows indefinitely within a local SQLite file; production would apply the 1-year retention policy with automated purging/rollups and cheaper cold storage to control costs at scale
+- Prototype uses SQLite as single-file store; production would use PostgreSQL with replication/sharding for durability and horizontal write scaling across multiple nodes
+- Prototype uses an in-process deque and background thread for async analytics; production would use a message queue (Kafka/RabbitMQ) with consumer groups to decouple ingestion from processing and survive process crashes
+- Prototype uses an in-memory dict cache local to one process; production would use a distributed cache (Redis) shared across horizontally scaled redirect-serving nodes for consistency and larger capacity
+- Prototype's monotonic counter for ID generation is single-process safe but not multi-node safe; production would use a distributed ID generator (Snowflake-style) or a database-backed sequence coordinated across shards
+- Prototype's rate limiter is per-process in-memory and resets on restart; production would use a centralized store (Redis) for rate-limit counters to work correctly behind multiple load-balanced instances
+- Prototype runs as a single OS process with threads; production would containerize and deploy multiple stateless replicas behind a load balancer for high availability and horizontal scalability
+- Prototype's malicious-URL check is a static blocklist; production would integrate with a real-time threat-intelligence/safe-browsing API for stronger security guarantees
+- Prototype omits distributed tracing/metrics export; production would integrate structured logging, Prometheus metrics, and distributed tracing (e.g., OpenTelemetry) for full observability
+- Prototype geolocation is omitted/stubbed since no external GeoIP service is available offline; production would integrate a GeoIP database/service for accurate location analytics
 
 ## Assumptions
-- What is the expected scale (requests per second, total URLs stored)? -> assumed: Assume moderate-to-high scale: ~1000 requests/sec, millions of URLs, designed to scale to billions
-- What analytics granularity and retention period are required? -> assumed: Track click count, timestamp, referrer, and basic geo/device info; retain data for 1 year with daily aggregation
-- Should the system support user authentication and multi-tenancy? -> assumed: Assume anonymous URL creation is allowed, with optional API key-based authentication for tracking ownership
-- What are the requirements for custom domains or branded short links? -> assumed: Use a single default short domain; custom domains are out of scope for initial version
-- Is real-time analytics required or is batch/near-real-time acceptable? -> assumed: Near-real-time analytics with a few minutes of delay is acceptable, using async event processing
-- What is the expected deployment environment (cloud provider, on-prem, specific tech stack preferences)? -> assumed: Assume cloud-agnostic design using widely adopted technologies (e.g., PostgreSQL/Redis, containerized deployment)
+- What scale (requests/sec, total URLs) must the system support? -> assumed: Assume moderate scale: up to 10M URLs and 1000 requests/sec, designed to scale further with sharding/caching
+- What short-code generation strategy is preferred (random, base62 counter, hash-based)? -> assumed: Use base62 encoding of an auto-incrementing distributed ID (e.g., via Snowflake-like generator) for uniqueness and short length
+- What analytics granularity and real-time requirements are needed (real-time dashboard vs batch reports)? -> assumed: Assume near-real-time analytics via async event logging (message queue) aggregated periodically, with a simple stats API
+- Is user authentication/multi-tenancy required, or is this an anonymous/public service? -> assumed: Assume optional lightweight API-key based auth for URL management; redirects remain public and unauthenticated
+- What is the required data retention period for analytics and URL mappings, and any compliance needs (GDPR, etc.)? -> assumed: Assume default retention of 1 year for analytics data with ability to purge on request; no specific compliance regime assumed beyond basic data privacy
+- Should short URLs support expiration or one-time use? -> assumed: Assume optional expiration date field per URL; no default expiration unless specified by user
+- What tech stack/language/framework preferences exist? -> assumed: Assume a common modern stack: backend in Node.js/Python/Java (choose based on team norms), relational DB (PostgreSQL) for mappings, Redis for caching, and a message queue (Kafka/RabbitMQ) for analytics events
 
 ## Limitations
 - Reasoning and code authoring were model-driven; no stage needed the deterministic fallback.

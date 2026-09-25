@@ -134,7 +134,7 @@ _SUMMARY_BLOCK = re.compile(r"^<<<SUMMARY>>>\n(?P<body>.*?)^<<<END SUMMARY>>>", 
 
 
 def _parse_file_blocks(text: str) -> dict:
-    """Parse the delimiter format used for change sets::
+    """Parse the delimiter format used for generated projects and change sets::
 
         <<<FILE relative/path.py>>>
         ...verbatim file content...
@@ -483,7 +483,8 @@ class LLMProvider(ReasoningProvider):
             f"Data model: {', '.join(architecture.data_model)}\n"
             f"API:\n{api}"
         )
-        data = self._ask_json("codegen", system, user)
+        data = self._ask("codegen", system, user, _parse_file_blocks,
+                         json_mode=False, fmt="file-block")
         files: list[Artifact] = []
         for f in data.get("files", []):
             path = str(f.get("path", "")).strip()
@@ -506,7 +507,8 @@ class LLMProvider(ReasoningProvider):
             f"PREVIOUS BUNDLE:\n{listing}\n\n"
             f"SANDBOX OUTPUT (compile errors / unittest result):\n{sandbox_output[-4000:]}"
         )
-        data = self._ask_json("codegen", load_prompt("codegen_repair"), user)
+        data = self._ask("codegen", load_prompt("codegen_repair"), user, _parse_file_blocks,
+                         json_mode=False, fmt="file-block")
         repaired: list[Artifact] = []
         for f in data.get("files", []):
             path = str(f.get("path", "")).strip()

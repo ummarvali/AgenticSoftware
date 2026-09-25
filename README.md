@@ -39,16 +39,17 @@ python3 -m agentic_sdlc --provider claude --file examples/greenfield.txt
 python3 -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
 ```
 
-A run takes ~4–6 minutes. The recorded runs used `claude-sonnet-5` and cost $0.27–0.38 each
+A run takes ~5–12 minutes. The recorded runs used `claude-sonnet-5` and cost $0.41–0.53 each
 at its published $2 / $10 per-million-token price. Cost depends on the model: token counts
 are always reported (from the API), while a dollar figure is shown only when the model's
 price is known (a dated table in `llm/client.py`, or `AGENTIC_LLM_PRICE_PER_MTOK="in,out"`);
 otherwise the run reports `cost n/a` instead of guessing. The
 model analyses the requirement, plans a 15–30-task graph, designs the service, writes the
-code **and** its tests; the code is accepted only after it passes a static safety scan,
-compiles, and its own tests pass in a sandbox (one repair pass with the real error output
-if they don't). The API contract and README are then synthesized from the model's design
-by the Repair agent if the model's bundle left them out. The result lands in `runs/<run-id>/`, ending with
+code, its `openapi.yaml`, its README **and** its tests (unit tests plus integration tests
+that drive every endpoint over HTTP, including error cases); the code is accepted only after
+it passes a static safety scan, compiles, and its own tests pass in a sandbox (one repair
+pass with the real error output if they don't). If the model leaves the contract or README
+out, the Repair agent synthesizes them from the design. The result lands in `runs/<run-id>/`, ending with
 `artifacts/ENGINEERING_SUMMARY.md`. **No key is committed anywhere in this repository.**
 
 **No key to hand? The evidence is already recorded.** Four live runs, produced by the
@@ -59,12 +60,17 @@ final code, are checked in exactly as they came out of `runs/`:
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
-| The hardest case: a **Go** target — the design records Go, the validated slice is Python (stated as a limitation), 15 model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
+| The hardest case: a **Go** target — the design records Go, the validated slice is Python (stated as a limitation), and its model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
 | The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
 | How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
 
 Each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how),
 and its tests pass from the checkout: `cd examples/llm-run/artifacts && python3 -m unittest discover -s tests`.
+The brownfield change set is re-verified against `demo/` with
+`python3 scripts/verify_change.py examples/llm-run-brownfield --repo demo` (copies `demo/`,
+applies the change, runs the existing tests plus the new ones). `scripts/evaluate.py` does
+both for **every** recorded run each time it runs — the recorded code is re-tested, not just
+its logs.
 
 **Fallback mode — no key, no third-party packages.** The same agents, gates and validator,
 with the deterministic engine in place of the model (this is also what CI runs):
@@ -73,7 +79,7 @@ with the deterministic engine in place of the model (this is also what CI runs):
 export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
 python3 -m unittest discover -s tests                   # 72 tests, OK
 python3 -m agentic_sdlc --file examples/greenfield.txt  # plan, build, validate, report — offline
-python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 4 recorded live runs
+python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 4 recorded live runs, re-tested now
 ```
 
 The fallback's output for the mandatory requirement is committed as [`demo/`](demo/) — a
@@ -502,7 +508,8 @@ AgenticSoftware/
 │  └─ README.md
 ├─ scripts/
 │  ├─ demo.py                          One-command narrated demo (all scenarios + monitoring)
-│  ├─ evaluate.py                      Evaluation scorecard: quality / adherence / efficiency (+ recorded live runs)
+│  ├─ evaluate.py                      Evaluation scorecard: quality / adherence / efficiency; re-tests every recorded live run
+│  ├─ verify_change.py                 Re-verify a recorded brownfield change set against its repository
 │  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
 ├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
 ├─ src/agentic_sdlc/
@@ -614,7 +621,7 @@ risks derived from the produced code → human acceptance gate.
 
 | Failure | Behaviour | Where |
 | --- | --- | --- |
-| Model call errors / times out / drops the connection / returns bad JSON | bounded retries (failed attempts' tokens are still counted), each attempt, retry, repair pass and fallback **printed on the console as it happens** (`[LLM] …` lines), then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm`. Change sets use a delimiter format instead of JSON, so whole source files never need escaping | `llm_provider._ask`, `_with_fallback`, `_parse_file_blocks` |
+| Model call errors / times out / drops the connection / returns bad JSON | bounded retries (failed attempts' tokens are still counted), each attempt, retry, repair pass and fallback **printed on the console as it happens** (`[LLM] …` lines), then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm`. Generated projects and change sets use a delimiter format (`<<<FILE path>>>`) instead of JSON, so whole source files never need escaping | `llm_provider._ask`, `_with_fallback`, `_parse_file_blocks` |
 | Model-authored code fails the scan, compile or its own tests | rejected in a throwaway sandbox; the failure output is fed back to the model for **one repair pass** (recorded as a `codegen` retry event — `metrics.llm.retries`); a second rejection uses the verified template, recorded as a `codegen` fallback | `llm_provider._ensure_bundle`, `_llm_repair_files` |
 | Model plan is invalid (unknown category, missing code/tests/validate/summary, cycle) | rejected; deterministic plan used. A valid plan is normalized so every validate task depends on all the work it reports on, and summary on validation | `llm_provider._enforce_plan_invariants`, `TaskGraph.validate_acyclic` |
 | Generated code does not compile | the Validator raises; the retry re-validates (a failed report is never reused) and the run **halts** for a human with the partial record saved | `ValidatorAgent.act` |
@@ -650,8 +657,8 @@ requirements. `result.json` is the durable *audit record*, not memory. A long-te
 (repository index for brownfield, retrieval of past runs) is a future seam behind
 `CodebaseAnalyst`.
 
-**Why no MCP / model tool-calling.** The model never invokes tools; it returns structured JSON
-and the orchestrator acts on it. There is therefore no prompt-injection-to-tool-call path. MCP
+**Why no MCP / model tool-calling.** The model never invokes tools; it returns structured data
+(JSON for analysis, plans and designs; file blocks for code) and the orchestrator acts on it. There is therefore no prompt-injection-to-tool-call path. MCP
 becomes the right choice when the agent must reach Jira, GitHub or a repository in production —
 through the firm's gateway, with allow-listed servers.
 
@@ -723,10 +730,10 @@ Not enforced in this prototype (documented, would be required for production):
   compiles and its own tests pass; a rejected bundle gets one repair pass with the sandbox
   output, and only then is a verified template used. The default/offline (no-key) path
   always uses the verified template.
-- On the live path the **API contract and README are synthesized from the model's design**
-  by the Repair agent when the model's bundle omits them (the codegen prompt caps the bundle
-  at 8 files so it fits one response). The contract lists only endpoints found in the code;
-  the validator checks that it exists, not that it conforms.
+- On the live path the model is asked for the code, `openapi.yaml`, README and tests as one
+  bundle (at most 12 files, so it fits one response). If it omits the contract or README, the
+  Repair agent synthesizes them from the design, listing only endpoints found in the code.
+  The validator checks that a contract exists, not that it conforms to the code.
 - **Design decisions are not verified individually.** A model's design can describe more
   than its slice implements (an async queue, a required header, role checks); the coverage
   table verifies endpoints, and the tests verify behaviour the model chose to test. Each

@@ -88,23 +88,28 @@ class LLMProviderTests(unittest.TestCase):
         self.assertGreaterEqual(provider.metrics.fallbacks, 1)
 
 
-_VALID_BUNDLE = json.dumps({"files": [
-    {"path": "pkg/__init__.py", "content": ""},
-    {"path": "pkg/calc.py", "content": "def add(a, b):\n    return a + b\n"},
-    {"path": "tests/test_calc.py",
-     "content": ("import unittest\nfrom pkg.calc import add\n\n"
-                 "class T(unittest.TestCase):\n"
-                 "    def test_add(self):\n"
-                 "        self.assertEqual(add(1, 2), 3)\n\n"
-                 "if __name__ == '__main__':\n    unittest.main()\n")},
-    {"path": "README.md", "content": "# Generated\n"},
-]})
+def _blocks(files):
+    """Render files in the model's file-block output format."""
+    return "".join(f"<<<FILE {p}>>>\n{c}<<<END FILE>>>\n" for p, c in files)
+
+
+_VALID_FILES = [
+    ("pkg/__init__.py", ""),
+    ("pkg/calc.py", "def add(a, b):\n    return a + b\n"),
+    ("tests/test_calc.py", "import unittest\nfrom pkg.calc import add\n\n"
+                           "class T(unittest.TestCase):\n"
+                           "    def test_add(self):\n"
+                           "        self.assertEqual(add(1, 2), 3)\n\n"
+                           "if __name__ == '__main__':\n    unittest.main()\n"),
+    ("README.md", "# Generated\n"),
+]
+_VALID_BUNDLE = _blocks(_VALID_FILES)
 
 # Syntactically broken code must be rejected by the sandbox gate.
-_BROKEN_BUNDLE = json.dumps({"files": [
-    {"path": "pkg/bad.py", "content": "def broken(:\n    pass\n"},
-    {"path": "tests/test_bad.py", "content": "import unittest\n"},
-]})
+_BROKEN_BUNDLE = _blocks([
+    ("pkg/bad.py", "def broken(:\n    pass\n"),
+    ("tests/test_bad.py", "import unittest\n"),
+])
 
 
 class LLMCodegenTests(unittest.TestCase):

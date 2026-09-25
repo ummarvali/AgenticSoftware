@@ -1,3 +1,3 @@
-"""Inventory management backend package."""
+"""Inventory service package: stdlib-only REST API backed by SQLite."""
 
-__all__ = ["db", "service", "alerts", "app", "openapi"]
+__version__ = "1.0.0"

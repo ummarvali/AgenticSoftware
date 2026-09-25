@@ -5,50 +5,48 @@
 **Validation:** 5/5 checks passed
 
 ## Implementation Plan
-- Level 0: design_data_model (design)
-- Level 1: design_alerting_mechanism (design, reused), design_api_contract (design, reused)
-- Level 2: code_project_scaffolding (code)
-- Level 3: code_data_models (code, reused), docs_setup_readme (docs)
-- Level 4: code_item_warehouse_apis (code, reused), code_stock_operations (code, reused), code_threshold_config (code, reused)
-- Level 5: code_alert_generation (code, reused), code_stock_query (code, reused)
-- Level 6: code_alert_query_api (code, reused), tests_stock_logic_unit (tests)
-- Level 7: docs_api_reference (docs, reused), tests_api_integration (tests, reused)
-- Level 8: validate_test_suite_lint (validate)
-- Level 9: validate_manual_api_checks (validate, reused)
-- Level 10: summary_final_report (summary)
+- Level 0: design-1 (design)
+- Level 1: design-2 (design, reused), design-3 (design, reused)
+- Level 2: code-1 (code), code-2 (code, reused)
+- Level 3: code-3 (code, reused), code-4 (code, reused), code-5 (code, reused), code-6 (code, reused)
+- Level 4: code-7 (code, reused), tests-3 (tests)
+- Level 5: code-8 (code, reused), tests-1 (tests, reused)
+- Level 6: tests-2 (tests, reused), docs-1 (docs), docs-2 (docs, reused)
+- Level 7: validate-1 (validate)
+- Level 8: validate-2 (validate, reused)
+- Level 9: summary-1 (summary)
 
 ## Rationale (key decisions & agent decision log)
-- Implement as a single Python process using only stdlib: http.server (or wsgiref) for HTTP routing, sqlite3 for persistence, json for serialization, logging for structured logs — no external frameworks or DBs in this slice.
-- Target production architecture (per requirement defaults) is PostgreSQL for storage and Kafka/SNS for alert events with JWT/API-key auth; this prototype substitutes SQLite (WAL mode) for Postgres and an in-process pluggable Notifier + alerts table for the message queue, preserving the same API contract.
-- Use SQLite explicit transactions (BEGIN IMMEDIATE) plus a per-row application lock pattern (SELECT ... then UPDATE within same transaction) to serialize concurrent stock adjustments on the same item/warehouse and prevent lost updates.
-- Enforce idempotency by requiring an idempotency_key on /stock/add and /stock/adjust, stored with a UNIQUE constraint in stock_adjustments; duplicate keys return the original result instead of reapplying the delta.
-- Guard all write endpoints (POST/PUT) with a simple API-key header checked against a hashed key stored in api_keys table; GET endpoints remain open for low-latency reads.
-- Every stock adjustment writes a row to stock_adjustments (audit trail: who/when/why/delta/result) inside the same transaction as the stock update, ensuring audit and mutation are atomic.
-- After each adjustment, evaluate the item's threshold in the same transaction; if resulting quantity is below threshold, insert an alerts row and call Notifier.publish(...) (stub logs to stdout/file) simulating an event bus publish.
-- Pagination implemented via LIMIT/OFFSET query params (page, page_size) with a total count returned; filters implemented via dynamic WHERE clause construction with parameter binding to avoid SQL injection.
-- Serve a static OpenAPI 3.0 JSON document at /openapi.json describing all endpoints, generated/maintained by hand alongside route definitions, satisfying the API documentation requirement without extra tooling.
-- Use stdlib logging configured to emit structured JSON log lines for every stock mutation and alert trigger, serving as the observability baseline (metrics/tracing hooks left as extension points, e.g., counters dict exposed via a /metrics endpoint using stdlib only).
+- Prototype implemented as a single Python process using only the standard library: http.server for routing, sqlite3 for persistence, threading for concurrency, no external frameworks
+- SQLite database opened in WAL mode; each write operation runs inside an explicit transaction (BEGIN IMMEDIATE) to serialize writers while allowing concurrent readers for low-latency queries
+- Optimistic concurrency implemented via a version integer column on stock_items; adjustment writes use UPDATE ... WHERE version = ? and retry with fresh read on version mismatch, bounded by a small retry loop to satisfy strong per-record consistency
+- Idempotency for /stock/adjust implemented via idempotency_keys table: if the same Idempotency-Key + request hash arrives, the cached response is replayed instead of re-applying the delta
+- Threshold resolution: per (warehouse_id, product_id) threshold in stock_items.threshold takes precedence; falls back to global_threshold table row when NULL
+- Alert generation is synchronous within the same DB transaction as the adjustment: after commit, if new quantity < resolved threshold and no ACTIVE alert exists, insert one; if quantity rises back above threshold, existing ACTIVE alert is auto-resolved
+- Alert events (created/resolved) are pushed to an in-memory Python queue.Queue acting as a stand-in pub/sub bus, allowing future consumers (email/webhook/Slack) to subscribe without changing core write path
+- Authentication implemented as a static api_keys table checked against an Authorization: Bearer <key> or X-API-Key header; role field (READ/WRITE/ADMIN) gates endpoint access in the router
+- Audit trail is append-only: every successful add/adjust writes one stock_adjustments row in the same transaction as the stock_items update, guaranteeing durability and traceability
+- Validation layer rejects adjustments referencing unknown warehouse_id/product_id (404), negative resulting quantity (409/422), and malformed payloads (400) before touching the DB
+- Observability implemented via Python logging module (structured JSON log lines for adjustments/alerts) and a simple /metrics endpoint returning in-memory counters (request counts, adjustment counts, active alert count)
 - Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).
 - Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default
-- Architect: reuse - architecture already committed; 'design_alerting_mechanism' is covered by it
-- Architect: reuse - architecture already committed; 'design_api_contract' is covered by it
+- Architect: reuse - architecture already committed; 'design-2' is covered by it
+- Architect: reuse - architecture already committed; 'design-3' is covered by it
 - CodeGenerator: generate - no code yet → generate from the design
-- CodeGenerator: reuse - code already generated from the current design; 'code_data_models' is covered by it
-- DocGenerator: generate-docs - generate README and architecture docs
-- CodeGenerator: reuse - code already generated from the current design; 'code_item_warehouse_apis' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_stock_operations' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_threshold_config' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_alert_generation' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_stock_query' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_alert_query_api' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-2' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-3' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-4' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-5' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-6' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-7' is covered by it
 - TestGenerator: generate-tests - generate unit + integration tests for the code
-- DocGenerator: defer - docs stage already ran and produced nothing; the Repair agent synthesizes docs from the design after validation
-- TestGenerator: reuse - test suite already generated; 'tests_api_integration' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'code-8' is covered by it
+- TestGenerator: reuse - test suite already generated; 'tests-1' is covered by it
+- TestGenerator: reuse - test suite already generated; 'tests-2' is covered by it
+- DocGenerator: generate-docs - generate README and architecture docs
+- DocGenerator: reuse - documentation already generated; 'docs-2' is covered by it
 - Validator: validate - compile code, run tests, check contract & docs
-- Validator: reuse - artifact set unchanged since the last report; 'validate_manual_api_checks' needs no re-run
-- SummaryWriter: summarize - consolidate the run into the final summary
-- Repair: repair - auto-fixing: api contract present, documentation present
-- Validator: validate - compile code, run tests, check contract & docs
+- Validator: reuse - artifact set unchanged since the last report; 'validate-2' needs no re-run
 - SummaryWriter: summarize - consolidate the run into the final summary
 
 
@@ -56,31 +54,34 @@
 
 | Method | Path | Summary | Status | In generated slice |
 | --- | --- | --- | --- | --- |
-| `POST` | `/items` | Register a new inventory item | 201 | yes |
-| `GET` | `/items` | List items with pagination/filtering by sku/name | 200 | yes |
-| `GET` | `/items/{item_id}` | Get item details | 200 | yes |
-| `POST` | `/warehouses` | Register a new warehouse | 201 | yes |
-| `GET` | `/warehouses` | List all warehouses with inventory summary (total qty, distinct items, low-stock count) | 200 | yes |
-| `POST` | `/stock/add` | Add stock quantity for item in a warehouse (creates stock row if absent) | 200 | yes |
-| `POST` | `/stock/adjust` | Adjust stock (positive or negative delta) with audit trail and idempotency | 200 | yes |
-| `GET` | `/stock/{item_id}/{warehouse_id}` | Query current stock level for an item in a specific warehouse | 200 | yes |
-| `GET` | `/stock/{item_id}` | Query aggregated stock levels across all warehouses for an item | 200 | yes |
-| `GET` | `/stock` | List stock records with pagination and filtering by item_id/warehouse_id/low_stock_only | 200 | yes |
-| `PUT` | `/stock/{item_id}/{warehouse_id}/threshold` | Configure low-stock threshold for an item/warehouse pair | 200 | yes |
-| `GET` | `/alerts/low-stock` | List current low-stock conditions (stock below threshold) across items/warehouses | 200 | yes |
-| `GET` | `/alerts` | List historical triggered alerts with pagination/filtering by status/date | 200 | yes |
-| `GET` | `/audit/adjustments` | Query audit history of stock adjustments with pagination/filtering | 200 | yes |
-| `GET` | `/openapi.json` | Serve OpenAPI specification for API documentation | 200 | design-only |
+| `POST` | `/warehouses` | Create a warehouse | 201 | yes |
+| `GET` | `/warehouses` | List warehouses | 200 | yes |
+| `GET` | `/warehouses/{warehouse_id}` | Get warehouse details | 200 | yes |
+| `POST` | `/products` | Create a product/SKU | 201 | yes |
+| `GET` | `/products` | List products | 200 | yes |
+| `GET` | `/products/{product_id}` | Get product details | 200 | yes |
+| `POST` | `/stock` | Add new stock entry (initial intake) for a product at a warehouse; creates stock_item if absent, else increments quantity | 201 | yes |
+| `POST` | `/stock/adjust` | Increment/decrement stock quantity idempotently; header Idempotency-Key required; rejects if resulting quantity < 0 | 200 | yes |
+| `GET` | `/stock/{warehouse_id}/{product_id}` | Get current stock level for a product at a specific warehouse | 200 | yes |
+| `GET` | `/products/{product_id}/stock` | Get stock levels for a product across all warehouses | 200 | yes |
+| `GET` | `/warehouses/{warehouse_id}/stock` | Get all stock levels within a warehouse | 200 | yes |
+| `PUT` | `/thresholds/{warehouse_id}/{product_id}` | Set/update low-stock threshold for a product/warehouse pair | 200 | yes |
+| `PUT` | `/thresholds/default` | Set the global default threshold used when no per-item threshold is configured | 200 | yes |
+| `GET` | `/alerts` | List active (and optionally resolved) low-stock alerts, filterable by warehouse/product/status | 200 | yes |
+| `POST` | `/alerts/{alert_id}/resolve` | Manually resolve an alert (e.g., after restock reviewed) | 200 | yes |
+| `GET` | `/stock/{warehouse_id}/{product_id}/history` | Retrieve audit trail of adjustments for a product/warehouse | 200 | yes |
 
 ## Generated Artifacts
 - inventory/__init__.py
 - inventory/db.py
-- inventory/alerts.py
+- inventory/auth.py
+- inventory/events.py
 - inventory/service.py
-- inventory/openapi.py
-- inventory/app.py
-- run.py
+- inventory/api.py
+- inventory/server.py
 - openapi.yaml
+- tests/__init__.py
+- tests/test_service.py
 - tests/test_api.py
 - README.md
 
@@ -91,7 +92,7 @@
 | Check | Result | Detail |
 | --- | --- | --- |
 | code compiles | PASS | all files compiled |
-| tests pass | PASS | Ran 4 tests in 0.455s — OK (2 interpreter warning(s) emitted by the generated tests) |
+| tests pass | PASS | Ran 16 tests in 0.564s — OK |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
 | static safety scan | PASS | no findings |
@@ -108,39 +109,39 @@ Approach:
 
 ## Run Monitoring
 - provider: llm
-- tasks_completed: 20
+- tasks_completed: 18
 - retries: 0
-- repairs: 1
+- repairs: 0
 - degradations: 0
 - parallel_levels: 6
-- reused_tasks: 12
+- reused_tasks: 13
 - human_gates_passed_before_summary: 2
 - llm_calls: 4
-- llm_tokens: 31413
-- llm_est_cost_usd: 0.2728
+- llm_tokens: 57447
+- llm_est_cost_usd: 0.5328
 - llm_fallbacks: []
 
 ## Risks
-- Persistence is SQLite (single file, single node); a multi-node deployment needs an external database.
+- Persistence: an in-memory store (data lost on restart) or SQLite (single file, single node) where configured; a multi-node deployment needs an external database.
 - Authentication in the generated slice is an in-process prototype; rate limiting is not enforced on write endpoints.
 - Generated tests cover core paths; add load/security tests before production.
 
 ## Trade-offs
-- Prototype uses SQLite with file-level WAL and BEGIN IMMEDIATE for concurrency control; production would use PostgreSQL with row-level SELECT FOR UPDATE locking and connection pooling to support higher write concurrency and multiple app instances.
-- Prototype delivers alerts by writing to a local alerts table and calling a stub Notifier (log line); production would publish to Kafka/SNS so downstream consumers (email/webhook services) can process alerts asynchronously and reliably at scale.
-- Prototype runs as a single process with in-process locking, limiting horizontal scalability; production would run multiple stateless API instances behind a load balancer with the database as the sole source of truth for locking.
-- Prototype implements auth as a single static API-key check against a local table; production would integrate full JWT/OAuth2 with scopes, token expiry, and centralized identity provider.
-- Prototype exposes a hand-maintained static OpenAPI JSON file; production would auto-generate and validate the spec from route/schema definitions via a framework (e.g., FastAPI) to avoid drift.
-- Prototype logs structured JSON to stdout/file for observability; production would integrate with a metrics/tracing stack (Prometheus, OpenTelemetry, distributed tracing) for full observability across services.
-- Prototype uses simple LIMIT/OFFSET pagination which degrades on very large tables; production would use keyset/cursor-based pagination for consistent performance at scale.
+- Prototype uses SQLite with WAL mode and transactional retries for concurrency control; production would use a horizontally scalable RDBMS (e.g., PostgreSQL) with row-level locking or CAS-based optimistic concurrency at higher throughput
+- Prototype simulates the alert/event distribution with an in-process queue.Queue; production would publish to a durable broker (Kafka/SNS/SQS) so alert consumers survive process restarts and can scale independently
+- Prototype serves all reads from the same SQLite file as writes; production would add a read replica or caching layer (e.g., Redis) to further reduce read latency at scale and offload the primary write path
+- Prototype runs as a single process/thread pool via http.server; production would deploy multiple stateless service instances behind a load balancer for high availability of writes, with the database as the shared consistency point
+- Prototype stores API keys in a plain SQLite table with static roles; production would integrate a full OAuth2/JWT identity provider with token expiry, scopes, and key rotation
+- Prototype computes metrics/logging in-process with no external export; production would ship logs/metrics/traces to a centralized observability stack (e.g., OpenTelemetry collector, Prometheus, distributed tracing backend)
+- Prototype resolves alerts synchronously in the request path, adding latency to writes; production might offload alert evaluation to an async worker consuming the event stream to keep the write path minimal
 
 ## Assumptions
-- What datastore should be used (relational DB like Postgres, or NoSQL)? -> assumed: Use a relational database (PostgreSQL) for strong consistency and transactional stock adjustments
-- How should low-stock alerts be delivered (webhook, email, message queue/event, in-app notification)? -> assumed: Publish an event to a message queue (e.g., Kafka/SNS) and log an alert record accessible via API; email/webhook can be added later
-- Is the threshold for low-stock global, per-item, or per-item-per-warehouse, and who configures it? -> assumed: Threshold is configurable per item per warehouse via a dedicated API endpoint, with a default fallback value
-- Does the system need multi-tenancy (multiple organizations sharing the service)? -> assumed: Single-tenant deployment; multi-tenancy not required initially
-- What level of concurrency/transaction safety is required for simultaneous stock adjustments on the same item/warehouse? -> assumed: Use database-level transactions with row-level locking (SELECT FOR UPDATE) to ensure atomic adjustments
-- Are authentication and authorization required, and what scheme (API key, OAuth2, JWT)? -> assumed: Use API key or JWT-based authentication for all write endpoints; read endpoints may be less restricted
+- How should low-stock alerts be delivered (webhook, email, message queue, polling API)? -> assumed: Alerts are exposed via a query API and also published to an internal event/message queue (e.g., Kafka/SNS) for downstream consumers.
+- Are products and warehouses managed by this service or are they external entities referenced by ID? -> assumed: This service owns basic warehouse and product/SKU reference data needed for inventory tracking, with minimal CRUD support.
+- Is the low-stock threshold global, per-product, or per-product-per-warehouse? -> assumed: Threshold is configurable per product per warehouse, with an optional global default.
+- What level of concurrency/consistency is required (e.g., strict consistency vs eventual consistency) for stock adjustments? -> assumed: Use optimistic concurrency control (versioning) with strong consistency at the database level per warehouse-product record.
+- Does the service need multi-tenancy support (multiple organizations/clients)? -> assumed: Single-tenant deployment; multi-tenancy not required initially.
+- What authentication/authorization mechanism should be used for the REST APIs? -> assumed: API secured via API keys or OAuth2/JWT bearer tokens, with role-based access control for write vs read operations.
 
 ## Limitations
 - Reasoning and code authoring were model-driven; no stage needed the deterministic fallback.
@@ -148,4 +149,3 @@ Approach:
 - Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).
 - Human checkpoints are console-based in this prototype.
 - The validation sandbox is an isolated-mode subprocess with a timeout and a scrubbed environment, not a network-isolated container or separate OS user.
-- Design ↔ implementation: 14/15 designed endpoints are served by the generated slice; design-only: /openapi.json.

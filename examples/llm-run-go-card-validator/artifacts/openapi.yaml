@@ -1,48 +1,248 @@
 openapi: 3.0.3
 info:
-  title: Generated API
-  version: 1.0.0
-  description: "Synthesized by the Repair agent from the API design; lists only endpoints the generated slice serves."
+  title: Card Transaction Validation Microservice
+  version: "0.1.0"
+  description: >
+    Validates card transactions against structural rules (Luhn, expiry, CVV),
+    business rules (amount, currency, network, merchant), and basic fraud
+    heuristics (blacklist, velocity). Never persists or logs raw PAN/CVV.
+servers:
+  - url: http://localhost:8080
 paths:
-  "/v1/validate":
+  /v1/validate:
     post:
-      summary: "Submit a card transaction for validation; returns decision and reason codes. Idempotent via Idempotency-Key header."
+      summary: Validate a card transaction
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionRequest'
       responses:
-        "200":
-          description: "{ transaction_id, decision, reason_codes[], masked_card: {bin,last4,network}, latency_ms }"
-  "/v1/rules/reload":
+        '200':
+          description: Validation completed (may be valid or invalid)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+        '400':
+          description: Malformed or invalid request payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/blacklist:
     post:
-      summary: "Hot-reload validation rule configuration from disk without restarting the service"
+      summary: Add a hashed PAN to the blacklist
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlacklistRequest'
       responses:
-        "200":
-          description: "{ status: 'reloaded', rules_version, loaded_at }"
-  "/v1/rules":
+        '201':
+          description: Blacklist entry created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlacklistEntry'
+        '400':
+          description: Invalid hashed_pan or reason
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/audit/{request_id}:
     get:
-      summary: "Return the currently active rule configuration (non-sensitive) for observability"
+      summary: Retrieve an anonymized audit record for a prior validation
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
-        "200":
-          description: "{ min_amount, max_amount, daily_cap, monthly_cap, allowed_networks[], velocity_window_seconds, velocity_max_count, suspicious_amount_threshold }"
-  "/v1/blacklist":
-    post:
-      summary: "Add a card token (or raw PAN, hashed server-side) to the blacklist store"
-      responses:
-        "201":
-          description: "{ card_token, reason, added_at }"
-  "/healthz":
+        '200':
+          description: Audit record found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditRecordResponse'
+        '401':
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No audit record for the given request_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /healthz:
     get:
-      summary: "Liveness probe: process is running"
+      summary: Liveness check
       responses:
-        "200":
-          description: "{ status: 'ok' }"
-  "/readyz":
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /readyz:
     get:
-      summary: "Readiness probe: rules config loaded and stores reachable"
+      summary: Readiness check (datastore + config)
       responses:
-        "200":
-          description: "{ status: 'ready', rules_loaded: true, store_ok: true }"
-  "/metrics":
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '503':
+          description: Not ready (e.g. datastore unreachable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+  /metrics:
     get:
-      summary: "Prometheus-compatible text exposition of request counts, decision counts, latency histogram"
+      summary: Prometheus-style metrics exposition
       responses:
-        "200":
-          description: "text/plain Prometheus exposition format"
+        '200':
+          description: Plaintext metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    TransactionRequest:
+      type: object
+      required: [pan, expiry_month, expiry_year, cvv, amount, currency, merchant_id]
+      additionalProperties: false
+      properties:
+        pan:
+          type: string
+          description: Raw card number (12-19 digits). Never persisted or logged.
+        expiry_month:
+          type: integer
+        expiry_year:
+          type: integer
+        cvv:
+          type: string
+          description: Raw CVV (3-4 digits). Never persisted or logged.
+        amount:
+          type: number
+        currency:
+          type: string
+        merchant_id:
+          type: string
+        network_hint:
+          type: string
+    ValidationResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+        valid:
+          type: boolean
+        reason_codes:
+          type: array
+          items:
+            type: string
+        risk_score:
+          type: number
+        network:
+          type: string
+        masked_pan:
+          type: string
+    BlacklistRequest:
+      type: object
+      required: [hashed_pan]
+      properties:
+        hashed_pan:
+          type: string
+          description: sha256 hex digest of PAN+salt (64 hex chars)
+        reason:
+          type: string
+    BlacklistEntry:
+      type: object
+      properties:
+        hashed_pan:
+          type: string
+        reason:
+          type: string
+        added_at:
+          type: string
+    AuditRecordResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+        timestamp:
+          type: string
+        masked_pan:
+          type: string
+        network:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        valid:
+          type: boolean
+        reason_codes:
+          type: array
+          items:
+            type: string
+        risk_score:
+          type: number
+    ReadyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        checks:
+          type: object
+          properties:
+            db:
+              type: string
+            config:
+              type: string
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
