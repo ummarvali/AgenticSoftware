@@ -35,6 +35,15 @@ curl http://127.0.0.1:8000/api/stats/<code>   # click analytics
 Its tests: `python3 -m unittest discover -s tests` (20 tests). It has an OpenAPI contract
 ([`demo/openapi.yaml`](demo/openapi.yaml)), SQLite or in-memory storage, and a container image.
 
+<details>
+<summary><b>Screenshots</b> — the service running: start, create a short link, follow it</summary>
+
+![Server started with SQLite storage](docs/images/demo-1-server.png)
+![Creating a short link returns 201 and a code](docs/images/demo-2-create.png)
+![Opening the short link redirects to the original URL](docs/images/demo-3-redirect.png)
+
+</details>
+
 ## 2. See the agent build it
 
 The agent runs in GitHub Actions. Anyone can try it — no key or install needed:
@@ -51,6 +60,24 @@ The agent runs in GitHub Actions. Anyone can try it — no key or install needed
 issue ─▶ ⏸ approve run ─▶ agents analyse ─┬─▶ build + validate ─▶ result on issue ─▶ ⏸ accept ─▶ pull request
                                           └─▶ blocking questions on the issue ─▶ "/answer …" ─▶ build
 ```
+
+<details>
+<summary><b>Screenshots</b> — the mandatory requirement going through the pipeline (issue #12)</summary>
+
+**1. The request form** — a requirement in plain language and its target.
+![The Agent request form](docs/images/pipeline-1-request-form.png)
+
+**2. The pipeline acknowledges the issue** and shows exactly what the run will build.
+![Request received comment on the issue](docs/images/pipeline-2-request-received.png)
+
+**3. The maintainer approves the run** before the model is called (the key stays in GitHub).
+![Approving the agent-run environment](docs/images/pipeline-3-approve-run.png)
+
+**4. The agent runs**; the result is then posted on the issue and, once accepted, becomes a pull request —
+see [issue #12](https://github.com/ummarvali/AgenticSoftware/issues/12) and [PR #13](https://github.com/ummarvali/AgenticSoftware/pull/13).
+![The pipeline running after approval](docs/images/pipeline-4-running.png)
+
+</details>
 
 **Recorded runs** (each PR description is the full engineering summary: plan, decisions,
 validation, risks, trade-offs):
