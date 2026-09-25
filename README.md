@@ -53,18 +53,25 @@ Three ways in:
    These cover the brief's scope: greenfield, brownfield (enhancement, and bug fix or refactor
    as a custom change), and test and documentation improvements (custom change). Well-defined
    vs ambiguous is **not something you select**: the RequirementAnalyst detects ambiguity in
-   whatever text arrives, lists the open questions and records a default assumption for each
-   (shown in the result). The vague preset simply supplies a requirement that needs this.
+   whatever text arrives. A question with a sensible default becomes a recorded assumption; a
+   question with **no safe default** (what to change, what outcome defines done) is **asked on
+   the issue** before anything is built — step 3. The vague preset supplies such a requirement.
 2. Within seconds the issue gets a link to its **pipeline run**. The run waits until the
    maintainer approves the spend (the `agent-run` gate: the model key is the maintainer's and
    is never visible to anyone, including in logs).
-3. Watch it work: **agent run → Run the agent** streams every step live — the task graph, each
+3. **If the agent has questions, it asks them on the issue** — numbered, each with why it
+   matters and the default it would otherwise use — and stops without building anything.
+   Reply with a comment that starts with **`/answer`** (your answers, or `/answer use the
+   defaults`). Only the issue's author or a maintainer can answer. The answer starts a new run
+   with the requirement plus your answers, which builds without asking again (the maintainer
+   approves that run too). A clear requirement skips this step.
+4. Watch it work: **agent run → Run the agent** streams every step live — the task graph, each
    agent's decision, one `[LLM]` line per model call (stage, tokens, latency, retries), the
    sandbox validation and the in-run gates. A run takes ~6–12 minutes after approval.
-4. The result is **posted on your issue**: each validation check, tokens and cost, and the full
+5. The result is **posted on your issue**: each validation check, tokens and cost, and the full
    engineering summary. The run page shows the same summary, and its run-record artifact (named **`agent-run`**)
    holds the generated code, tests, `openapi.yaml`, `README.md` and `result.json`.
-5. The maintainer reviews it and accepts or rejects (the `agent-acceptance` gate). Accepted →
+6. The maintainer reviews it and accepts or rejects (the `agent-acceptance` gate). Accepted →
    a **pull request** is opened and linked on your issue: a new project under
    `generated/<run-id>/`, or a brownfield change as a diff of the real `demo/` files.
 
@@ -72,7 +79,8 @@ One issue runs one test case. To try several, open one issue per test case; they
 parallel, each with its own result comment and pull request.
 
 ```
-issue (test case) ─▶ ⏸ approve spend ─▶ agent run in Actions ─▶ result on the issue ─▶ ⏸ accept ─▶ pull request
+issue (test case) ─▶ ⏸ approve spend ─▶ agent analyses ─┬─▶ builds + validates ─▶ result on the issue ─▶ ⏸ accept ─▶ pull request
+                                                        └─▶ blocking questions on the issue ─▶ "/answer …" ─▶ new run (builds)
 ```
 
 Failures are shown, not hidden: a failed check, a halted run, or a model stage that fell back
@@ -148,7 +156,7 @@ with the deterministic engine in place of the model (this is also what CI runs):
 
 ```bash
 export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
-python3 -m unittest discover -s tests                   # 75 tests, OK
+python3 -m unittest discover -s tests                   # 79 tests, OK
 python3 -m agentic_sdlc --file examples/greenfield.txt  # plan, build, validate, report — offline
 python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 4 recorded live runs, re-tested now
 ```
@@ -289,7 +297,7 @@ Or drive it yourself — **Linux / macOS / WSL**:
 cd AgenticSoftware
 export PYTHONPATH=src
 python3 -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
-python3 -m unittest discover -s tests -v          # 75 framework tests
+python3 -m unittest discover -s tests -v          # 79 framework tests
 python3 -m agentic_sdlc --interactive --file examples/greenfield.txt   # human approves each gate
 ```
 
@@ -564,7 +572,7 @@ description is the full engineering summary: task plan, decisions, validation, r
 | --- | --- | --- |
 | Greenfield — the mandatory URL shortener | [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [#1](https://github.com/ummarvali/AgenticSoftware/pull/1) | 5/5 checks, 28 tests, new project under `generated/` |
 | Brownfield — rate limiting on `demo/` | [#2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), then [#4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [#5](https://github.com/ummarvali/AgenticSoftware/pull/5) | 6/6 checks; code review of #3 found two security gaps; #5, after the prompt fix, closes both |
-| Ambiguous — "Make the app faster." on `demo/` (ambiguity detected by the agent, not declared) | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
+| Ambiguous — "Make the app faster." on `demo/` (ambiguity detected by the agent, not declared; this run predates the clarification round, so it built on its assumptions) | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
 
 **Offline, reproducible without a key:** see [`examples/README.md`](examples/README.md) for
 inputs, commands, and expected outputs for the **greenfield**, **brownfield**, and
@@ -584,8 +592,9 @@ inputs, commands, and expected outputs for the **greenfield**, **brownfield**, a
   question gets a recorded default assumption shown at the clarification gate; validation
   first fails 4/5 (no contract), the Repair agent adds it, re-validation passes 5/5. The
   control against a false "done" is the clarification gate — in `--interactive` mode a human
-  answers or rejects there — not the validator. In the GitHub pipeline no human sees these
-  assumptions before the run: they are listed in the summary posted on the issue and judged at
+  answers or rejects there — not the validator. In the GitHub pipeline the same analysis runs
+  first: questions with no safe default are asked on the issue and answered with `/answer`
+  before anything is built; the remaining assumptions are listed in the result and judged at
   the acceptance approval.
 
 ---
@@ -679,7 +688,7 @@ AgenticSoftware/
 
 Correctness and output quality are validated at **four** levels:
 
-1. **Framework tests** (`tests/`, 75 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 79 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
    **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
@@ -698,7 +707,7 @@ Correctness and output quality are validated at **four** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 75 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 79 tests ... OK
 ```
 
 4. **Continuous integration** (`.github/workflows/ci.yml`): every push to main and every pull request runs the framework
@@ -874,12 +883,12 @@ Not enforced in this prototype (documented, would be required for production):
   each stage is one model call (analysis, plan, design, code+tests), and most planned tasks
   are logged as `reuse` of that output (the CLI URL-shortener run: 23 of 29) — the plan shows
   what was covered and why, not 29 separate generations.
-- **Ambiguity in the pipeline is resolved by assumption, not by conversation.** Locally the
-  clarification gate (`--interactive`) lets a human confirm the assumptions before anything
-  is built; in the pipeline they are only seen afterwards, in the result. For "Make the app
-  faster." ([PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7)) that produced a broader change than a reviewer would likely
-  want. The next step is a clarification round on the issue: post the assumptions, wait for
-  the requester to confirm or correct them, then build.
+- **Clarification is one round, and the model decides what is blocking.** A new issue is
+  analysed first; questions the model marks as blocking (no safe default) are asked on the
+  issue and the `/answer` run builds without asking again, so a poor answer is caught at the
+  acceptance review, not by a second round. Before this round existed, "Make the app faster."
+  ([PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7)) was built on the model's assumptions and came out broader than a
+  reviewer would want — the case the round exists for.
 - **"Scalable" is designed, not load-tested.** The scaling path (sharded store, cache,
   async analytics, stateless replicas) is in each design and its trade-offs; the generated
   slice is a single process and no load test is run.
@@ -968,6 +977,9 @@ Request: an issue from the "Agent request" form (preset test cases or your own r
    │
    ├─ ⏸ approval  GitHub Environment "agent-run": a maintainer approves spend before the key is used
    │
+   ├─ ask first   (new issues) blocking questions → posted on the issue, run stops, nothing built;
+   │              an "/answer …" comment by the author or a maintainer starts a new run that builds
+   │
    ├─ agent run   key from the environment secret (this job only, main branch only) · live [LLM] console trail
    │                         engineering summary published on the run page · run record uploaded
    │                         a failing or halted run, a missing key, or any model stage that fell
@@ -982,10 +994,12 @@ Request: an issue from the "Agent request" form (preset test cases or your own r
 ```
 
 **Try it (reviewers).** Open an issue → [*Agent request*](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml) → pick a test case — the mandatory URL
-shortener, another greenfield domain, a brownfield change to `demo/`, the ambiguous "Make the
+shortener, another greenfield domain, a brownfield change to `demo/`, the vague "Make the
 app faster.", or your own requirement — and submit. The issue gets a link to the run; once a
-maintainer approves the spend, the console streams live and the result is posted back on the
-issue, followed by the pull request if it is accepted. No key or write access is needed.
+maintainer approves the spend, the agent analyses the requirement: if it has blocking
+questions it asks them on the issue (answer with `/answer …`, which starts the build);
+otherwise the console streams the build live and the result is posted back on the issue,
+followed by the pull request if it is accepted. No key or write access is needed.
 To run it with your own key and approvals instead, fork it — [TL;DR B](#b-run-it-in-your-own-fork--your-key-your-approvals).
 
 Two environments, because they gate two different decisions: `agent-run` is *who may spend

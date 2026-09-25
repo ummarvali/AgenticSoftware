@@ -50,6 +50,8 @@ on:
         options: [claude, openai, deterministic]
   issues:
     types: [opened]              # the "Agent request" issue form (title starts with [agent])
+  issue_comment:
+    types: [created]             # an "/answer" reply to the agent's clarifying questions
 
 permissions:
   contents: read
@@ -63,7 +65,17 @@ concurrency:
 jobs:
   request:
     name: resolve the request
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.issue.title, '[agent]')
+    # Runs for: a maintainer's Run workflow; a new [agent] issue; or an "/answer" comment on an
+    # [agent] issue by the issue's author or a maintainer (other comments start nothing).
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[agent]'))
+      || (github.event_name == 'issue_comment'
+          && !github.event.issue.pull_request
+          && startsWith(github.event.issue.title, '[agent]')
+          && startsWith(github.event.comment.body, '/answer')
+          && (github.event.comment.user.login == github.event.issue.user.login
+              || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,6 +84,7 @@ jobs:
       requirement: ${{ steps.resolve.outputs.requirement }}
       repo_path: ${{ steps.resolve.outputs.repo_path }}
       provider: ${{ steps.resolve.outputs.provider }}
+      ask_first: ${{ steps.resolve.outputs.ask_first }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -82,23 +95,27 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
           IN_REQUIREMENT: ${{ inputs.requirement }}
           IN_REPO_PATH: ${{ inputs.repo_path }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: python scripts/pipeline_request.py resolve
       - name: Acknowledge on the issue
-        if: always() && github.event_name == 'issues'
+        if: always() && github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ github.event.issue.number }}
+          EVENT_NAME: ${{ github.event_name }}
           OK: ${{ steps.resolve.outcome == 'success' }}
           ERROR: ${{ steps.resolve.outputs.error }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ "$OK" = true ]; then
-            msg="Request received — [pipeline run]($RUN_URL). **Waiting for a maintainer to approve the spend** (a manual step, so it can take a while). The run then takes about 6–12 minutes and its result is posted here."
+          if [ "$OK" != true ]; then
+            msg="This request could not be started: ${ERROR:-invalid request}. Please use the **Agent request** form (or start an answer with \`/answer\`)."
+          elif [ "$EVENT_NAME" = issue_comment ]; then
+            msg="Answers received — [pipeline run]($RUN_URL) builds the requirement with them. **Waiting for a maintainer to approve the spend**; the result is posted here."
           else
-            msg="This request could not be started: ${ERROR:-invalid request}. Please open a new issue from the **Agent request** form."
+            msg="Request received — [pipeline run]($RUN_URL). **Waiting for a maintainer to approve the spend** (a manual step, so it can take a while). The agent first analyses the requirement: if it has questions with no safe default it asks them here; otherwise it builds, and the result is posted here (about 6–12 minutes)."
           fi
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$msg"
 
@@ -110,6 +127,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       run_id: ${{ steps.agent.outputs.run_id }}
+      needs_clarification: ${{ steps.agent.outputs.needs_clarification }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,15 +170,22 @@ jobs:
           REQUIREMENT: ${{ needs.request.outputs.requirement }}
           REPO_PATH: ${{ needs.request.outputs.repo_path }}
           PROVIDER: ${{ needs.request.outputs.provider }}
+          ASK_FIRST: ${{ needs.request.outputs.ask_first }}
         run: |
           set +e
           if [ -n "$KEY_VAR" ]; then export "${KEY_VAR}_FILE=$RUNNER_TEMP/model.key"; fi
           args=(--provider "$PROVIDER" --output-root runs)
           if [ -n "$REPO_PATH" ]; then args+=(--repo "$REPO_PATH"); fi
+          # A new issue is ask-first: questions with no safe default are asked, not guessed.
+          if [ "$ASK_FIRST" = true ]; then args+=(--ask-first); fi
           # "--" so a requirement starting with "-" is never read as an option.
           python -u -m agentic_sdlc "${args[@]}" -- "$REQUIREMENT"
           rc=$?
           run_dir=$(ls -d runs/* 2>/dev/null | tail -1)
+          if [ $rc -eq 3 ] && [ -f "$run_dir/clarification.json" ]; then
+            echo "needs_clarification=true" >> "$GITHUB_OUTPUT"
+            rc=0   # asking is a successful outcome; nothing was built, nothing to accept
+          fi
           # A model run is only reviewable if the model did the work: any stage that
           # fell back to the deterministic engine fails the job before the gate.
           if [ $rc -eq 0 ] && [ "$PROVIDER" != deterministic ]; then
@@ -190,7 +215,7 @@ jobs:
   report:
     name: post the result on the issue
     needs: [request, run-agent]
-    if: always() && github.event_name == 'issues' && needs.request.result == 'success'
+    if: always() && github.event_name != 'workflow_dispatch' && needs.request.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -211,8 +236,15 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           RUN_ID: ${{ needs.run-agent.outputs.run_id }}
           OUTCOME: ${{ needs.run-agent.result }}
+          ASKED: ${{ needs.run-agent.outputs.needs_clarification }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          if [ "$ASKED" = true ] && [ -f "runs/$RUN_ID/clarification.json" ]; then
+            python scripts/pipeline_request.py questions "runs/$RUN_ID" > comment.md
+            echo "Console log: [pipeline run]($RUN_URL)" >> comment.md
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+            exit 0
+          fi
           if [ -n "$RUN_ID" ] && [ -f "runs/$RUN_ID/result.json" ]; then
             python scripts/pipeline_request.py report "runs/$RUN_ID" > comment.md
           else
@@ -232,6 +264,7 @@ jobs:
   accept:
     name: human acceptance → pull request
     needs: [request, run-agent]
+    if: needs.run-agent.outputs.needs_clarification != 'true'   # nothing was built yet
     runs-on: ubuntu-latest
     environment: agent-acceptance      # pauses here until a required reviewer approves
     permissions:
@@ -289,8 +322,9 @@ jobs:
     name: tell the issue when a result is not accepted
     needs: [request, run-agent, accept]
     if: >-
-      always() && github.event_name == 'issues'
+      always() && github.event_name != 'workflow_dispatch'
       && needs.run-agent.result == 'success' && needs.accept.result != 'success'
+      && needs.run-agent.outputs.needs_clarification != 'true'
     runs-on: ubuntu-latest
     permissions:
       issues: write

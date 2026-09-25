@@ -43,6 +43,9 @@ class Ambiguity:
     question: str            # what a human should decide
     why_it_matters: str      # the engineering impact of the answer
     default_assumption: str  # what the system assumes if nobody answers
+    # True when no safe default exists: the answer would change what gets built. In the
+    # GitHub pipeline a blocking question is asked on the issue before anything is built.
+    blocking: bool = False
 
 
 @dataclass
@@ -258,6 +261,7 @@ class RunResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
     output_dir: str = ""
+    awaiting_clarification: bool = False   # ask-first mode stopped with questions
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to plain dicts so the result can be dumped to JSON."""
@@ -274,4 +278,5 @@ class RunResult:
             "events": self.events,
             "metrics": self.metrics,
             "output_dir": self.output_dir,
+            "awaiting_clarification": self.awaiting_clarification,
         }

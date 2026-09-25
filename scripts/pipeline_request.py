@@ -1,16 +1,21 @@
 """Turn a pipeline trigger into a validated agent request (used by .github/workflows/agent.yml).
 
-Two ways in:
+Three ways in:
 
 * ``workflow_dispatch`` — a maintainer fills in the requirement, repo folder and provider;
 * an issue opened from the *Agent request* form — anyone (for example a reviewer) picks a
-  preset scenario or writes a requirement. The issue body is untrusted text: it is parsed
-  here, never interpolated into a shell script, the requirement is length-capped, the
-  target folder must be one of an allow-list, and the provider is always the live model.
-  Nothing runs until a maintainer approves the ``agent-run`` environment.
+  preset scenario or writes a requirement. The run is *ask-first*: if the analysis finds a
+  question with no safe default, the agent asks it on the issue instead of guessing;
+* an ``/answer`` comment on that issue (by its author or a maintainer) — the original
+  requirement plus the answers are built, without asking again.
 
-    python scripts/pipeline_request.py resolve        # writes requirement/repo_path/provider to $GITHUB_OUTPUT
-    python scripts/pipeline_request.py report <run>   # prints the issue comment for a finished run
+Issue and comment text is untrusted: it is parsed here, never interpolated into a shell
+script, length-capped, the target folder must be one of an allow-list, and the provider is
+always the live model. Nothing runs until a maintainer approves the ``agent-run`` environment.
+
+    python scripts/pipeline_request.py resolve           # writes the request to $GITHUB_OUTPUT
+    python scripts/pipeline_request.py report <run>      # the issue comment for a finished run
+    python scripts/pipeline_request.py questions <run>   # the issue comment asking the questions
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_REQUIREMENT = 2000
+MAX_ANSWERS = 2000
 ISSUE_TARGETS = {"": "", "demo": "demo"}          # folders an issue may target
 
 # Preset scenarios offered by the issue form (.github/ISSUE_TEMPLATE/agent-request.yml).
@@ -83,9 +89,24 @@ def _from_dispatch() -> tuple[str, str, str]:
     return requirement, repo_path, provider
 
 
+def _answers(comment: str) -> str:
+    """The text after a leading '/answer' command."""
+    text = comment.strip()
+    if not text.lower().startswith("/answer"):
+        raise ValueError("an answer comment must start with /answer")
+    text = text[len("/answer"):].strip()
+    if not text:
+        raise ValueError("write your answers after /answer (or '/answer use the defaults')")
+    if len(text) > MAX_ANSWERS:
+        raise ValueError(f"the answers are longer than {MAX_ANSWERS} characters")
+    return text
+
+
 def resolve() -> int:
+    event = os.environ.get("EVENT_NAME")
+    ask_first = event == "issues"
     try:
-        if os.environ.get("EVENT_NAME") == "issues":
+        if event in ("issues", "issue_comment"):
             requirement, repo_path, provider = _from_issue(os.environ.get("ISSUE_BODY", ""))
         else:
             requirement, repo_path, provider = _from_dispatch()
@@ -93,6 +114,11 @@ def resolve() -> int:
             raise ValueError("the requirement is empty")
         if len(requirement) > MAX_REQUIREMENT:
             raise ValueError(f"the requirement is longer than {MAX_REQUIREMENT} characters")
+        if event == "issue_comment":
+            answers = _answers(os.environ.get("COMMENT_BODY", ""))
+            requirement += ("\n\nAnswers from the requester to the agent's clarifying "
+                            "questions (take these as decided; where an answer says to use "
+                            "the defaults, use the stated default assumptions):\n" + answers)
     except ValueError as exc:
         print(f"::error::invalid agent request: {exc}")
         out = os.environ.get("GITHUB_OUTPUT")
@@ -103,12 +129,33 @@ def resolve() -> int:
     print(f"requirement : {requirement}")
     print(f"target      : {repo_path or '(new project)'}")
     print(f"provider    : {provider}")
+    print(f"ask first   : {ask_first}")
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
         delim = f"EOF_{secrets.token_hex(8)}"       # multi-line safe, not guessable from input
         with open(out, "a", encoding="utf-8") as fh:
             fh.write(f"requirement<<{delim}\n{requirement}\n{delim}\n")
             fh.write(f"repo_path={repo_path}\nprovider={provider}\n")
+            fh.write(f"ask_first={'true' if ask_first else 'false'}\n")
+    return 0
+
+
+def questions(run_dir: str) -> int:
+    """Markdown for the issue comment that asks the agent's blocking questions."""
+    data = json.loads((Path(run_dir) / "clarification.json").read_text(encoding="utf-8"))
+    lines = ["**The agent needs answers before it builds anything.** Its analysis found "
+             "questions with no safe default:", ""]
+    for i, q in enumerate(data.get("questions", []), 1):
+        lines.append(f"{i}. **{q.get('question', '')}**")
+        if q.get("why_it_matters"):
+            lines.append(f"   Why it matters: {q['why_it_matters']}")
+        lines.append(f"   If you prefer the default: *{q.get('default_assumption', '')}*")
+    lines += ["", "Reply with a comment that starts with `/answer`, for example:", "",
+              "```", "/answer", "1. ...", "2. ...", "```", "",
+              "or `/answer use the defaults` to go ahead with the defaults above. "
+              "Your answer starts a new run with the requirement plus your answers "
+              "(a maintainer approves it, as before)."]
+    print("\n".join(lines))
     return 0
 
 
@@ -148,5 +195,7 @@ if __name__ == "__main__":
         raise SystemExit(resolve())
     if len(sys.argv) == 3 and sys.argv[1] == "report":
         raise SystemExit(report(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "questions":
+        raise SystemExit(questions(sys.argv[2]))
     print(__doc__)
     raise SystemExit(2)

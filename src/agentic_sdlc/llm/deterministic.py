@@ -78,11 +78,13 @@ class DeterministicProvider(ReasoningProvider):
                     question="Which application/component is in scope?",
                     why_it_matters="Determines what code is even touched.",
                     default_assumption="The primary service in the provided repository.",
+                    blocking=True,
                 ),
                 Ambiguity(
                     question="What metric defines success (e.g. p95 latency target)?",
                     why_it_matters="Without a target, 'done' is undefined and unverifiable.",
                     default_assumption="Reduce p95 request latency by 30% under current load.",
+                    blocking=True,
                 ),
                 Ambiguity(
                     question="What is the acceptable scope of change (config vs rewrite)?",

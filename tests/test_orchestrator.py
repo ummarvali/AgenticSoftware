@@ -276,6 +276,40 @@ class ValidationSafetyTests(unittest.TestCase):
             self.assertFalse(checks["tests pass"].passed)
             self.assertIn("not executed", checks["tests pass"].detail)
 
+class AskFirstTests(unittest.TestCase):
+    """Ask-first mode (the GitHub pipeline): ask blocking questions instead of guessing."""
+
+    def test_vague_requirement_stops_with_questions_and_builds_nothing(self):
+        import json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Orchestrator(OrchestratorConfig(
+                provider="deterministic", output_root=tmp, verbose=False, ask_first=True,
+            )).run("Make the app faster.")
+            self.assertTrue(result.awaiting_clarification)
+            self.assertEqual(result.artifacts, [])
+            self.assertIsNone(result.validation)
+            data = json.loads((Path(tmp) / result.run_id / "clarification.json").read_text())
+            self.assertGreaterEqual(len(data["questions"]), 1)
+            self.assertTrue(all(q["default_assumption"] for q in data["questions"]))
+
+    def test_clear_requirement_is_built_without_asking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Orchestrator(OrchestratorConfig(
+                provider="deterministic", output_root=tmp, verbose=False, ask_first=True,
+            )).run("Build a scalable URL shortener service with APIs, persistence, and analytics.")
+            self.assertFalse(result.awaiting_clarification)
+            self.assertTrue(result.validation.passed)
+
+    def test_without_ask_first_the_defaults_are_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Orchestrator(OrchestratorConfig(
+                provider="deterministic", output_root=tmp, verbose=False,
+            )).run("Make the app faster.")
+            self.assertFalse(result.awaiting_clarification)
+            self.assertIsNotNone(result.validation)
+
+
 
 if __name__ == "__main__":
     unittest.main()

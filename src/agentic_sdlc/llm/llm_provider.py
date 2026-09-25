@@ -335,6 +335,8 @@ class LLMProvider(ReasoningProvider):
                     question=a.get("question", ""),
                     why_it_matters=a.get("why_it_matters", ""),
                     default_assumption=a.get("default_assumption", ""),
+                    blocking=a.get("blocking") is True
+                    or str(a.get("blocking", "")).strip().lower() == "true",
                 ) for a in data.get("ambiguities", [])],
                 domain=data.get("domain", "generic") or "generic",
                 confidence=float(data.get("confidence", 0.5)),

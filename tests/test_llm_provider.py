@@ -54,7 +54,23 @@ class LLMProviderTests(unittest.TestCase):
         self.assertEqual(analysis.kind, RequirementKind.GREENFIELD)
         self.assertEqual(analysis.domain, "url_shortener")
         self.assertEqual(len(analysis.ambiguities), 1)
+        self.assertFalse(analysis.ambiguities[0].blocking)      # absent -> not blocking
         self.assertGreater(provider.metrics.total_tokens, 0)
+
+    def test_analyze_reads_blocking_questions(self):
+        payload = json.dumps({
+            "kind": "ambiguous", "intent": "i", "normalized_problem": "p",
+            "functional_requirements": [], "non_functional_requirements": [],
+            "ambiguities": [
+                {"question": "which part?", "why_it_matters": "w", "default_assumption": "d",
+                 "blocking": True},
+                {"question": "scale?", "why_it_matters": "w", "default_assumption": "d",
+                 "blocking": "false"},
+            ],
+            "domain": "generic", "confidence": 0.3,
+        })
+        analysis = _provider([payload]).analyze_requirement(Requirement("Make it better."))
+        self.assertEqual([a.blocking for a in analysis.ambiguities], [True, False])
 
     def test_decompose_parses_valid_plan(self):
         payload = json.dumps({"tasks": [

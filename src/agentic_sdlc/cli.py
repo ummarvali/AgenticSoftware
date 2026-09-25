@@ -74,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", help="Path to an existing repo (enables brownfield reasoning).")
     p.add_argument("--interactive", action="store_true",
                    help="Prompt for human approval at each checkpoint.")
+    p.add_argument("--ask-first", action="store_true",
+                   help="Stop after analysis if a question has no safe default; write "
+                        "clarification.json and exit 3 (used by the GitHub pipeline).")
     p.add_argument("--provider", default="auto",
                    choices=["auto", "deterministic", "anthropic", "claude", "llm", "openai"],
                    help="Reasoning backend. 'auto' uses the LLM when a key/endpoint is "
@@ -113,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         verbose=not (args.quiet or args.json),   # --json keeps stdout machine-readable
         parallel=not args.sequential,
         inject_fault=_parse_faults(args.inject_fault),
+        ask_first=args.ask_first,
     )
     requirement = Requirement(text=text, repo_path=args.repo)
     result = Orchestrator(config).run(requirement)
@@ -123,7 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result.to_dict(), indent=2, default=str))
     else:
         _print_report(result)
-    # Exit status for CI: 0 only for a validated, accepted run.
+    # Exit status for CI: 0 only for a validated, accepted run; 3 = questions asked.
+    if result.awaiting_clarification:
+        return 3
     halted = (result.metrics or {}).get("run", {}).get("halted", False)
     return 0 if (result.validation and result.validation.passed and not halted) else 1
 
@@ -136,6 +142,9 @@ def _print_report(result) -> None:
         print(f"Classification : {result.analysis.kind.value} "
               f"(domain={result.analysis.domain}, "
               f"confidence={result.analysis.confidence:.2f})")
+    if result.awaiting_clarification:
+        print("Status         : waiting for answers to the blocking questions "
+              "(clarification.json); nothing was built")
     print(f"Artifacts      : {len(result.artifacts)} files -> {result.output_dir}")
     if result.validation:
         print(f"Validation     : {result.validation.summary} "

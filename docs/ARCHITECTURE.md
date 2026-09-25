@@ -190,6 +190,9 @@ flowchart LR
     DISP["Run workflow<br/>(maintainers)"] --> REQ
     REQ --> G1{"⏸ agent-run<br/>approve spend"}
     G1 --> RUN["agent run<br/>orchestrator + agents<br/>(§2–§3), in-run gates auto"]
+    RUN -- "blocking questions<br/>(new issue)" --> ASK["questions posted<br/>on the issue"]
+    ASK --> ANS["/answer comment<br/>(author or maintainer)"]
+    ANS --> REQ
     RUN --> ART[("run record<br/>artifact")]
     RUN --> REP["report<br/>result on the issue"]
     RUN --> G2{"⏸ agent-acceptance<br/>accept result"}
@@ -201,6 +204,7 @@ flowchart LR
 | Untrusted input | Issue text is parsed as data: preset scenarios, a length cap, an allow-listed target folder; it reaches the agent only through environment variables. |
 | The model key | An environment secret of `agent-run` (main branch only), handed to the agent as a file that it reads and deletes, so it is never in the agent's initial environment and model-written tests cannot read it from `/proc`. |
 | Least privilege | The agent job has a read-only token and keeps no credentials in the checkout; only the acceptance job can write, and it never executes generated code. |
+| Ambiguity | A new issue runs *ask-first*: questions the analysis marks as blocking (no safe default) are posted on the issue and nothing is built; an `/answer` comment by the author or a maintainer starts a run with the answers that builds without asking again. Other open questions become recorded assumptions. |
 | Honest failure | A failed check, a halted run, or any model stage that fell back to the offline engine fails the agent job, so it is never offered for acceptance; the issue is told either way. |
 | Audit trail | The console log, the step summary, the run record (artifact, 30 days), the issue thread and the pull request. |
 

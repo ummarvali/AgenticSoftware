@@ -9,7 +9,9 @@ body:
         Keep the `[agent]` prefix in the title — it is what starts the run.
         Opening this issue starts the **Agent pipeline** (Actions tab). A maintainer approves
         the run before the model is called; the agent then plans, builds and validates, and
-        posts its result here. If the maintainer accepts it, a pull request follows.
+        posts its result here. If your requirement leaves open what to build, the agent first
+        asks its questions here — reply with a comment starting with `/answer`.
+        If the maintainer accepts the result, a pull request follows.
         A run takes about 6–12 minutes after approval.
   - type: dropdown
     id: scenario

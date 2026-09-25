@@ -46,6 +46,10 @@ class PipelineHalted(Exception):
     """Raised when a human rejects a checkpoint or a required task cannot recover."""
 
 
+class ClarificationNeeded(Exception):
+    """Raised in ask-first mode when the requirement has blocking questions."""
+
+
 @dataclass
 class OrchestratorConfig:
     provider: str = "auto"
@@ -56,6 +60,10 @@ class OrchestratorConfig:
     max_repair_iterations: int = 1  # validation-driven self-correction rounds
     parallel: bool = True          # run independent tasks of a DAG level concurrently
     verbose: bool = True
+    # Ask-first mode (the GitHub pipeline): if the analysis finds a blocking question —
+    # one with no safe default — stop before planning, write clarification.json and let
+    # the requester answer on the issue. Off: proceed on the default assumptions.
+    ask_first: bool = False
     # Fault injection for demonstrating recovery: {category: times_to_fail}.
     inject_fault: dict[str, int] = field(default_factory=dict)
 
@@ -106,6 +114,8 @@ class Orchestrator:
                      "auto-approve (non-interactive; add --interactive to review each checkpoint)"))
         try:
             self._bootstrap(ctx)
+            if self.config.ask_first:
+                self._ask_if_blocked(ctx, result.run_id)
             graph = self._plan(ctx)
             result.task_graph = graph
             self._execute(ctx, graph)
@@ -114,6 +124,9 @@ class Orchestrator:
         except PipelineHalted as exc:
             bb.log("halted", str(exc))
             self._say(f"\n[orchestrator] HALTED: {exc}")
+        except ClarificationNeeded as exc:
+            result.awaiting_clarification = True
+            self._say(f"\n[orchestrator] STOPPED to ask: {exc}")
 
         # Assemble and persist the result regardless of halt, so partial runs are
         # still inspectable.
@@ -151,6 +164,28 @@ class Orchestrator:
         self._say(f"[gate 1/3] requirement clarification: {decision.note}")
         if not decision.approved:
             raise PipelineHalted("clarification checkpoint rejected")
+
+    def _ask_if_blocked(self, ctx: AgentContext, run_id: str) -> None:
+        """Stop before any planning or code when a question has no safe default."""
+        analysis = ctx.blackboard.analysis
+        blocking = [a for a in (analysis.ambiguities if analysis else []) if a.blocking]
+        if not blocking:
+            ctx.blackboard.log("clarification", "no blocking questions; proceeding on defaults")
+            return
+        run_dir = Path(self.config.output_root) / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        questions = [{"question": a.question, "why_it_matters": a.why_it_matters,
+                      "default_assumption": a.default_assumption}
+                     for a in blocking]
+        (run_dir / "clarification.json").write_text(json.dumps({
+            "requirement": ctx.blackboard.requirement.text,
+            "intent": analysis.intent if analysis else "",
+            "questions": questions,
+        }, indent=2), encoding="utf-8")
+        ctx.blackboard.log("clarification", f"{len(blocking)} blocking question(s); asking the requester")
+        for i, q in enumerate(questions, 1):
+            self._say(f"[clarification] Q{i}: {q['question']}  (default: {q['default_assumption']})")
+        raise ClarificationNeeded(f"{len(blocking)} blocking question(s) need an answer first")
 
     def _plan(self, ctx: AgentContext) -> TaskGraph:
         graph = TaskDecomposerAgent().build(ctx)
