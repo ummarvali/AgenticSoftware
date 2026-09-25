@@ -36,7 +36,7 @@ SCENARIOS: dict[str, tuple[str, str]] = {
         "per warehouse, with low-stock alerts.", ""),
     "Brownfield enhancement: add rate limiting to demo/": (
         (ROOT / "examples" / "brownfield.txt").read_text(encoding="utf-8").strip(), "demo"),
-    "Ambiguous: \"Make the app faster.\" against demo/": (
+    "Vague requirement: \"Make the app faster.\" against demo/ (the agent must detect the ambiguity)": (
         (ROOT / "examples" / "ambiguous.txt").read_text(encoding="utf-8").strip(), "demo"),
     "Custom: new project (write the requirement below)": ("", ""),
     "Custom: change to demo/ — bug fix, refactor, tests or docs (write it below)": ("", "demo"),

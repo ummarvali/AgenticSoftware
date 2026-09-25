@@ -47,8 +47,14 @@ Three ways in:
    - *Greenfield: URL shortener* — the mandatory use case
    - *Greenfield: another domain* — inventory with low-stock alerts
    - *Brownfield enhancement* — add rate limiting to the existing service in `demo/`
-   - *Ambiguous* — "Make the app faster." against `demo/`
+   - *Vague requirement* — "Make the app faster." against `demo/`
    - *Custom* — your own new project, or your own bug fix / refactor / tests / docs for `demo/`
+
+   These cover the brief's scope: greenfield, brownfield (enhancement, and bug fix or refactor
+   as a custom change), and test and documentation improvements (custom change). Well-defined
+   vs ambiguous is **not something you select**: the RequirementAnalyst detects ambiguity in
+   whatever text arrives, lists the open questions and records a default assumption for each
+   (shown in the result). The vague preset simply supplies a requirement that needs this.
 2. Within seconds the issue gets a link to its **pipeline run**. The run waits until the
    maintainer approves the spend (the `agent-run` gate: the model key is the maintainer's and
    is never visible to anyone, including in logs).
@@ -558,7 +564,7 @@ description is the full engineering summary: task plan, decisions, validation, r
 | --- | --- | --- |
 | Greenfield — the mandatory URL shortener | [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [#1](https://github.com/ummarvali/AgenticSoftware/pull/1) | 5/5 checks, 28 tests, new project under `generated/` |
 | Brownfield — rate limiting on `demo/` | [#2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), then [#4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [#5](https://github.com/ummarvali/AgenticSoftware/pull/5) | 6/6 checks; code review of #3 found two security gaps; #5, after the prompt fix, closes both |
-| Ambiguous — "Make the app faster." on `demo/` | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
+| Ambiguous — "Make the app faster." on `demo/` (ambiguity detected by the agent, not declared) | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
 
 **Offline, reproducible without a key:** see [`examples/README.md`](examples/README.md) for
 inputs, commands, and expected outputs for the **greenfield**, **brownfield**, and
