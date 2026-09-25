@@ -126,7 +126,7 @@ acceptance.
 ## 4. The DAG (mandatory URL-shortener example)
 
 On the live model the plan is the model's own and differs between runs: for this requirement,
-19 tasks in 9 levels ([PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11)) to 29 tasks in 13 levels (the recorded CLI run,
+19 to 31 tasks in 9 levels ([PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11), [PR #13](https://github.com/ummarvali/AgenticSoftware/pull/13)) up to 29 tasks in 13 levels (the recorded CLI run,
 `examples/llm-run/artifacts/ENGINEERING_SUMMARY.md`), always of the shape requirements →
 architecture → data model and short codes → code, API contract, analytics, caching, security
 → tests → docs → validation → summary. The offline engine's plan is
@@ -210,4 +210,4 @@ flowchart LR
 
 In the pipeline the orchestrator's three in-run gates are automatic (`AutoApprove`, which never
 accepts a failing report); the human decisions are the two environment approvals. Examples:
-[issue #10](https://github.com/ummarvali/AgenticSoftware/issues/10) → [PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11) (greenfield), [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) (brownfield), [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7) (ambiguous, on assumptions), [issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8) → [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9) (ambiguous, clarified on the issue first).
+[issue #12](https://github.com/ummarvali/AgenticSoftware/issues/12) → [PR #13](https://github.com/ummarvali/AgenticSoftware/pull/13) (greenfield), [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) (brownfield), [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7) (ambiguous, on assumptions), [issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8) → [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9) (ambiguous, clarified on the issue first).
