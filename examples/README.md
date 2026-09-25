@@ -1,7 +1,7 @@
 # Example Scenarios
 
 The primary way to run these is the **GitHub Actions pipeline**: open an issue from the
-[Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)
+[Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml),
 write the requirement and pick its target (examples: [issue #10](https://github.com/ummarvali/AgenticSoftware/issues/10) → [PR #11](https://github.com/ummarvali/AgenticSoftware/pull/11) greenfield, [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) →
 [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) and [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) brownfield, [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) →
 [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7) ambiguous built on assumptions, [issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8) → [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9) ambiguous clarified on the issue). Four earlier CLI runs on the live model are described in
@@ -72,6 +72,12 @@ Validation : 5/5 checks passed (PASS)
   action. What guards against a false "done" here is the **clarification gate**: the
   assumptions are shown to a human before any work starts (and in auto mode they are
   recorded in the summary), not the validator.
+- **Ask-first (how the GitHub pipeline runs it):**
+  `python -m agentic_sdlc --ask-first --file examples/ambiguous.txt` stops after analysis,
+  writes the blocking questions to `clarification.json` and exits with status 3 — nothing is
+  built. In the pipeline those questions are posted on the issue and an `/answer` comment
+  starts the build ([issue #8](https://github.com/ummarvali/AgenticSoftware/issues/8) →
+  [PR #9](https://github.com/ummarvali/AgenticSoftware/pull/9)).
 
 ---
 

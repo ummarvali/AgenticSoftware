@@ -13,6 +13,7 @@ The agent never writes to the repository; this is the separate, human-approved s
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from pathlib import Path
 
@@ -35,7 +36,11 @@ def main() -> int:
 
     run = Path(args.run)
     arts = run / "artifacts"
-    files = [p for p in sorted(arts.rglob("*")) if p.is_file() and "__pycache__" not in p.parts]
+    # Only the files the agent produced (listed in its run record) are applied — never files
+    # that code executed during validation may have created in the artifacts folder.
+    record = json.loads((run / "result.json").read_text(encoding="utf-8"))
+    listed = {a["path"] for a in record.get("artifacts", [])}
+    files = [arts / p for p in sorted(listed) if (arts / p).is_file() and _inside(arts, arts / p)]
     if (arts / "CHANGES.diff").exists():
         if not args.repo:
             print("this run is a change set: pass --repo <folder it targets>")
@@ -60,8 +65,11 @@ def main() -> int:
         dest = Path("generated") / run.name
         if dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(arts, dest, ignore=shutil.ignore_patterns("__pycache__", "*.db"))
-        print(f"placed the generated project under {dest}")
+        for src in files:
+            target = dest / src.relative_to(arts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, target)
+        print(f"placed the generated project ({len(files)} files) under {dest}")
     return 0
 
 

@@ -65,7 +65,7 @@ jobs:
       - name: Smoke test the container
         run: |
           docker run -d --rm -p 8000:8000 --name us url-shortener:ci
-          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/healthz && break; sleep 0.5; done
+          for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8000/healthz && break; sleep 0.5; done
           code=$(curl -fs -X POST http://127.0.0.1:8000/api/shorten -H 'Content-Type: application/json' \
                  -d '{"url":"https://example.com/long"}' | python -c 'import sys,json;print(json.load(sys.stdin)["code"])')
           curl -fs -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8000/$code" | grep -q 302
@@ -75,7 +75,7 @@ jobs:
         run: |
           docker run -d --rm -p 8001:8000 --name us-sqlite \
             -e SHORTENER_STORE=sqlite -e SHORTENER_DB_PATH=/data/shortener.db url-shortener:ci
-          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8001/healthz && break; sleep 0.5; done
+          for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8001/healthz && break; sleep 0.5; done
           curl -fs -X POST http://127.0.0.1:8001/api/shorten -H 'Content-Type: application/json' \
                -d '{"url":"https://example.com/durable"}' | grep -q '"code"'
           docker exec us-sqlite python -c "import sqlite3; n=sqlite3.connect('/data/shortener.db').execute('select count(*) from links').fetchone()[0]; assert n == 1, n"

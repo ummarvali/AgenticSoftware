@@ -107,6 +107,7 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           EVENT_NAME: ${{ github.event_name }}
           OK: ${{ steps.resolve.outcome == 'success' }}
+          REQ: ${{ steps.resolve.outputs.requirement }}
           ERROR: ${{ steps.resolve.outputs.error }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -116,6 +117,10 @@ jobs:
             msg="Answers received — [pipeline run]($RUN_URL) builds the requirement with them. **Waiting for a maintainer to approve the spend**; the result is posted here."
           else
             msg="Request received — [pipeline run]($RUN_URL). **Waiting for a maintainer to approve the spend** (a manual step, so it can take a while). The agent first analyses the requirement: if it has questions with no safe default it asks them here; otherwise it builds, and the result is posted here (about 6–12 minutes)."
+          fi
+          if [ "$OK" = true ]; then
+            # Show the approver exactly what this run will build (requirement plus any answers).
+            msg="$msg"$'\n\n<details><summary>What this run will build</summary>\n\n'"$REQ"$'\n</details>'
           fi
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$msg"
 
@@ -179,16 +184,18 @@ jobs:
           # A new issue is ask-first: questions with no safe default are asked, not guessed.
           if [ "$ASK_FIRST" = true ]; then args+=(--ask-first); fi
           # "--" so a requirement starting with "-" is never read as an option.
-          python -u -m agentic_sdlc "${args[@]}" -- "$REQUIREMENT"
-          rc=$?
-          run_dir=$(ls -d runs/* 2>/dev/null | tail -1)
-          if [ $rc -eq 3 ] && [ -f "$run_dir/clarification.json" ]; then
+          python -u -m agentic_sdlc "${args[@]}" -- "$REQUIREMENT" | tee "$RUNNER_TEMP/agent.log"
+          rc=${PIPESTATUS[0]}
+          # The run folder comes from the CLI's own report line, not from listing runs/ — model
+          # code executed during validation could create extra folders there.
+          run_dir=$(sed -n 's|^Run record *: \(.*\)/result\.json$|\1|p' "$RUNNER_TEMP/agent.log" | tail -1)
+          if [ "$rc" -eq 3 ] && [ -f "$run_dir/clarification.json" ]; then
             echo "needs_clarification=true" >> "$GITHUB_OUTPUT"
             rc=0   # asking is a successful outcome; nothing was built, nothing to accept
           fi
           # A model run is only reviewable if the model did the work: any stage that
           # fell back to the deterministic engine fails the job before the gate.
-          if [ $rc -eq 0 ] && [ "$PROVIDER" != deterministic ]; then
+          if [ "$rc" -eq 0 ] && [ "$PROVIDER" != deterministic ]; then
             python - "$run_dir/result.json" <<'PY' || rc=1
           import json, sys
           llm = json.load(open(sys.argv[1]))["metrics"].get("llm") or {}
@@ -202,7 +209,7 @@ jobs:
           if [ -f "$run_dir/artifacts/ENGINEERING_SUMMARY.md" ]; then
             cat "$run_dir/artifacts/ENGINEERING_SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-          exit $rc   # a failing or halted run never reaches the approval gate
+          exit "$rc"   # a failing or halted run never reaches the approval gate
       - name: Publish the run record (always — failures are evidence too)
         if: always()
         uses: actions/upload-artifact@v4

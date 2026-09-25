@@ -60,8 +60,8 @@ Three ways in:
    recorded assumption; a question with **no safe default** (what to change, what outcome
    defines done) is **asked on the issue** before anything is built — step 3.
 2. Within seconds the issue gets a link to its **pipeline run**. The run waits until the
-   maintainer approves the spend (the `agent-run` gate: the model key is the maintainer's and
-   is never visible to anyone, including in logs).
+   maintainer approves the spend (the `agent-run` gate: the model key is the maintainer's; it is
+   never shown to anyone and is masked in logs).
 3. **If the agent has questions, it asks them on the issue** — numbered, each with why it
    matters and the default it would otherwise use — and stops without building anything.
    Reply with a comment that starts with **`/answer`** (your answers, or `/answer use the
@@ -150,7 +150,7 @@ code, its `openapi.yaml`, its README **and** its tests (unit tests plus integrat
 drive every endpoint over HTTP, including error cases); the code is accepted only after it
 passes a static safety scan, compiles, and its own tests pass in a sandbox (one repair pass
 with the real error output if they don't). The result lands in `runs/<run-id>/`, ending with
-`artifacts/ENGINEERING_SUMMARY.md`. Live runs used `claude-sonnet-5` and cost $0.37–0.67 each
+`artifacts/ENGINEERING_SUMMARY.md`. Live runs used `claude-sonnet-5` and cost $0.37–0.71 each
 at its published $2 / $10 per-million-token price; token counts are always
 reported, and a dollar figure only when the model's price is known (otherwise `cost n/a`).
 **No key is committed anywhere in this repository.**
@@ -366,15 +366,17 @@ A circuit breaker guards against runaway spend: `AGENTIC_LLM_MAX_CALLS` (default
 for a model with no known price the breaker assumes the most expensive rate in the table, so it trips early);
 if tripped, remaining stages degrade to the deterministic engine and the record says so.
 
-Keys are read **only** from the environment and are never written to disk or to
-`result.json`. To refresh a recorded run under `examples/` after your own run: `python scripts/snapshot_run.py --name llm-run` (copies the latest run and scrubs
+Keys are read from the environment — or, in the pipeline, from a private file named by
+`ANTHROPIC_API_KEY_FILE` that the agent deletes at start-up — and are never written to logs,
+`result.json` or run snapshots. To refresh a recorded run under `examples/` after your own run: `python scripts/snapshot_run.py --name llm-run` (copies the latest run and scrubs
 anything key-shaped).
 
 **CLI flags:** `--file <path>`, `--repo <path>` (brownfield: propose a change set against this repository), `--interactive`,
 `--provider auto|deterministic|claude|anthropic|openai|llm`, `--inject-fault <category[:N]>`,
 `--sequential` (disable in-level concurrency), `--output-root <dir>`, `--quiet`, `--json`
-(machine-readable result on stdout, logs suppressed). Exit status is 0 only for a validated,
-accepted run — usable as a CI step.
+(machine-readable result on stdout, logs suppressed), `--ask-first` (stop after analysis when a
+question has no safe default, write `clarification.json`). Exit status is 0 only for a
+validated, accepted run and 3 when questions were asked — usable as a CI step.
 
 ---
 
@@ -808,8 +810,8 @@ model path is evaluated without a key and without non-determinism in CI.
 
 Enforced:
 
-- **Secrets** are read only from environment variables, never written to disk, logs,
-  `result.json`, or run snapshots (`scripts/snapshot_run.py` scrubs key-shaped strings
+- **Secrets** are read only from environment variables (or the pipeline's private key file,
+  deleted at start-up), never written to logs, `result.json`, or run snapshots (`scripts/snapshot_run.py` scrubs key-shaped strings
   defensively). `.gitignore` excludes `.env`, `*.key`, `secrets.*`.
 - **Generated and model-authored code does not inherit credentials**: the test subprocess
   runs in isolated mode (`python -I -B`) with every `*KEY*`, `*TOKEN*`, `*SECRET*`,
@@ -832,7 +834,8 @@ Enforced:
   initial environment — the part `/proc/<pid>/environ` exposes to child processes such as the
   model-written tests it executes (a test proves this). The static scan also rejects code that
   names `/proc/`. The checkout keeps no token, and the job that holds a write token never
-  executes generated code.
+  executes generated code. This keeps the key out of the tests' *environment*, not out of their
+  *reach*: see the next section.
 - **Container**: the demo image runs as a non-root user with a health check.
 
 Not enforced in this prototype (documented, would be required for production):
@@ -840,10 +843,11 @@ Not enforced in this prototype (documented, would be required for production):
 - The validation sandbox is a temp directory + isolated-mode subprocess with a timeout and
   a scrubbed environment — **not** a network-isolated container or a separate OS user.
   Model-authored tests can still reach the network and the host filesystem within the
-  process's permissions. The key is kept out of their reach as described above (it is not in
-  any environment they can read), but they run as the same user with network access on the
-  runner, so the `agent-run` approver reads the requirement before approving, and the key is
-  dedicated to the pipeline with a spend limit. The static scan (which runs first) is a
+  process's permissions. The key is not in any environment they inherit, but on a
+  GitHub-hosted runner they run as a user with passwordless `sudo` and network access, so a
+  hostile test could still read process memory. The controls are therefore the `agent-run`
+  approver reading the requirement (and any `/answer`) before approving, and a key dedicated to
+  the pipeline with a spend limit; a production runner would drop `sudo` and block egress. The static scan (which runs first) is a
   guardrail, not a sandbox. In
   production this step runs in an ephemeral, no-network container under a separate user
   (gVisor/Firecracker), and the key comes from a secret store.
