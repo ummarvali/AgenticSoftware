@@ -830,7 +830,15 @@ by a named reviewer; the output enters the normal review path as a pull request;
 at a time (`concurrency`) bounds spend. Requirement text is passed to the job as an
 environment variable, never interpolated into the script, so it cannot inject shell commands.
 
-One-time setup (repository Settings): add the `ANTHROPIC_API_KEY` secret; create the
+**Who can use the key (public repository).** GitHub secrets are encrypted and write-only —
+nobody, including the owner, can read one back, and they are masked in logs. The workflow has
+no `pull_request` trigger, so forks and outside contributors cannot run it; starting it needs
+write access. The key is an *environment* secret of `agent-run`, restricted to `main`, so a
+workflow edited on another branch cannot reach it. Outside the repository: a dedicated key
+for this pipeline, a monthly spend limit on its Anthropic workspace, and rotation on a schedule.
+
+One-time setup (repository Settings): create the `agent-run` environment (deployment branches:
+`main` only) and add `ANTHROPIC_API_KEY` as its environment secret; create the
 `agent-acceptance` environment with required reviewers; allow GitHub Actions to create pull
 requests (Actions → General → Workflow permissions). Pull requests opened with the default
 `GITHUB_TOKEN` do not trigger other workflows — a GitHub App token would let CI run on them

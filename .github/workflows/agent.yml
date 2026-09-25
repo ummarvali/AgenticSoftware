@@ -1,14 +1,22 @@
 # The agent as a team pipeline — the production operating model.
 #
 # Nobody runs the model from a laptop or holds the key: a requirement is submitted here,
-# the agent runs in CI with the key from GitHub Secrets, its engineering summary is
+# the agent runs in CI with the key from a GitHub Environment secret, its engineering summary is
 # published on the run page, and the run then WAITS for a human to approve it (GitHub
 # Environment "agent-acceptance" with required reviewers). Only an approved run is turned
 # into a pull request — so the proposal lands in normal code review and normal CI.
 #
+# Who can use the key: GitHub secrets are encrypted, write-only (nobody can read one back,
+# including the owner) and masked in logs. This workflow has no pull_request trigger, so
+# forks and outside contributors cannot run it; workflow_dispatch needs write access.
+# The key is an ENVIRONMENT secret of "agent-run", limited to the main branch, so a
+# workflow edited on any other branch cannot reach it either.
+#
 # One-time setup (repository Settings):
-#   1. Secrets and variables → Actions → New repository secret: ANTHROPIC_API_KEY
-#      (or OPENAI_API_KEY for provider=openai).
+#   1. Environments → New environment "agent-run" → Deployment branches and tags:
+#      "Selected branches" → main → Environment secrets: ANTHROPIC_API_KEY
+#      (or OPENAI_API_KEY for provider=openai). Optionally add yourself as a required
+#      reviewer, so no run spends model credit without your approval.
 #   2. Environments → New environment "agent-acceptance" → Required reviewers: the
 #      people allowed to accept agent output.
 #   3. Actions → General → Workflow permissions: "Read and write" and
@@ -44,6 +52,7 @@ jobs:
   run-agent:
     name: agent run (plan → build → validate → summarize)
     runs-on: ubuntu-latest
+    environment: agent-run             # the key is this environment's secret, main branch only
     timeout-minutes: 45
     outputs:
       run_id: ${{ steps.agent.outputs.run_id }}
@@ -58,6 +67,7 @@ jobs:
         id: agent
         env:
           # The key reaches only this job, only for this step, never the approval job.
+          # (Empty unless the run is on main: the environment's branch rule.)
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PYTHONPATH: src
