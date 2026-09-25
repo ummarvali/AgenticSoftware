@@ -24,7 +24,57 @@ curl -X POST http://127.0.0.1:8000/api/shorten \
 
 curl -i http://127.0.0.1:8000/<code>          # 302 redirect
 curl http://127.0.0.1:8000/api/stats/<code>   # click analytics
+curl http://127.0.0.1:8000/metrics            # allowed/blocked rate-limit counts
 ```
+
+## Rate limiting
+
+The API is rate limited by default to protect it from abuse (excessive link
+creation, redirect flooding/scraping). Clients are identified by a
+server-validated API key (`X-API-Key` header, only if it matches a configured
+trusted key) or, otherwise, by their source IP — a client-supplied header is
+never trusted as identity on its own. Limits use an in-memory sliding-window
+counter per client per endpoint; on breach the API returns `429 Too Many
+Requests` with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining`
+headers. Counts of allowed/blocked/error requests are available at
+`GET /metrics` and logged.
+
+Configurable via environment variables (no redeploy needed if you instead use
+a polled JSON config file, see below):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SHORTENER_RATE_LIMIT_CREATE` | `100` | Max `POST /api/shorten` calls per window per client |
+| `SHORTENER_RATE_LIMIT_CREATE_WINDOW` | `60` | Window (seconds) for the create limit |
+| `SHORTENER_RATE_LIMIT_REDIRECT` | `300` | Max `GET /<code>` calls per window per client |
+| `SHORTENER_RATE_LIMIT_REDIRECT_WINDOW` | `60` | Window (seconds) for the redirect limit |
+| `SHORTENER_RATE_LIMIT_FAIL_MODE` | `open` | `open` (allow on limiter error) or `closed` (reject) |
+| `SHORTENER_RATE_LIMIT_CONFIG_PATH` | *(unset)* | Optional JSON file polled for live overrides |
+| `SHORTENER_RATE_LIMIT_CONFIG_POLL_SECONDS` | `5` | Poll interval for the config file |
+| `SHORTENER_TRUSTED_API_KEYS` | *(unset)* | Comma-separated keys that get a higher limit |
+| `SHORTENER_TRUSTED_RATE_LIMIT_MULTIPLIER` | `5` | Multiplier applied to trusted clients' limit |
+
+The JSON config file (if set) looks like:
+
+```json
+{
+  "rules": {"create": {"limit": 50, "window_seconds": 60},
+            "redirect": {"limit": 300, "window_seconds": 60}},
+  "fail_mode": "open",
+  "trusted_keys": ["abc123"],
+  "trusted_multiplier": 5
+}
+```
+
+**Failure mode is explicit**: by default the limiter fails *open* — if its
+internal counters error out, requests are still served (logged as an error in
+`/metrics`) rather than taking the whole API down. Set `fail_mode` to
+`"closed"` if you'd rather reject traffic than risk under-limiting during an
+internal fault. The counter storage sits behind a small `RateLimiterBackend`
+interface (`url_shortener/ratelimit.py`); the in-memory sliding-window
+implementation is single-instance only — swap in a Redis-backed (or similar
+shared-store) implementation of the same interface to make limits correct
+across multiple horizontally-scaled instances.
 
 ## Test it
 
@@ -40,6 +90,7 @@ python -m unittest discover -s tests -v
 | `url_shortener/store.py` | in-memory + SQLite backends |
 | `url_shortener/service.py` | validation, shorten, resolve, stats |
 | `url_shortener/analytics.py` | click aggregation |
+| `url_shortener/ratelimit.py` | rate limiting backend, config, metrics |
 | `url_shortener/api.py` | WSGI HTTP adapter |
 | `url_shortener/server.py` | dev server entrypoint |
 | `openapi.yaml` | API contract |
