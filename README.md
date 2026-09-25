@@ -28,8 +28,83 @@ engineering summary, all under **controlled autonomy** (agents act, humans appro
 
 ## ⚡ TL;DR — for the reviewer
 
-**Primary mode: the agents on a live model.** This is what the brief asks for and how the
-system was built and tested:
+The agent runs as a **GitHub Actions pipeline**, the way a team would operate it: the model
+key lives in GitHub, humans approve at two gates, and the output arrives as a pull request.
+Three ways in:
+
+| | How | What you need |
+| --- | --- | --- |
+| **A. Run it here, on GitHub** (recommended) | open an *Agent request* issue and pick a test case | a GitHub account — no install, no key |
+| **B. Run it in your own fork** | fork, add your key as a secret, *Run workflow* | an Anthropic key, ~5 minutes of setup |
+| **C. Run it on your machine** | the CLI, with or without a key | Python 3.10+ |
+
+### A. Run it here, on GitHub — no install, no key
+
+1. Open an issue from the **[Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)**, pick a test case and submit:
+   - *Greenfield: URL shortener* — the mandatory use case
+   - *Greenfield: another domain* — inventory with low-stock alerts
+   - *Brownfield enhancement* — add rate limiting to the existing service in `demo/`
+   - *Ambiguous* — "Make the app faster." against `demo/`
+   - *Custom* — your own new project, or your own bug fix / refactor / tests / docs for `demo/`
+2. Within seconds the issue gets a link to its **pipeline run**. The run waits until the
+   maintainer approves the spend (the `agent-run` gate: the model key is the maintainer's and
+   is never visible to anyone, including in logs).
+3. Watch it work: **agent run → Run the agent** streams every step live — the task graph, each
+   agent's decision, one `[LLM]` line per model call (stage, tokens, latency, retries), the
+   sandbox validation and the in-run gates. A run takes ~6–12 minutes after approval.
+4. The result is **posted on your issue**: each validation check, tokens and cost, and the full
+   engineering summary. The run page shows the same summary, and its **`agent-run` artifact**
+   holds the generated code, tests, `openapi.yaml`, `README.md` and `result.json`.
+5. The maintainer reviews it and accepts or rejects (the `agent-acceptance` gate). Accepted →
+   a **pull request** is opened and linked on your issue: a new project under
+   `generated/<run-id>/`, or a brownfield change as a diff of the real `demo/` files.
+
+```
+issue (test case) ─▶ ⏸ approve spend ─▶ agent run in Actions ─▶ result on the issue ─▶ ⏸ accept ─▶ pull request
+```
+
+Failures are shown, not hidden: a failed check, a halted run, or a model stage that fell back
+to the offline engine stops the pipeline before acceptance, and the issue says so. How the
+pipeline is built and secured: [§12](#12-operating-this-in-production--the-sre-view).
+
+### B. Run it in your own fork — your key, your approvals
+
+1. **Fork** this repository; in the fork's **Actions** tab, enable workflows.
+2. Fork **Settings → Environments**:
+   - `agent-run` — *Deployment branches and tags*: `main` only; *Environment secrets*:
+     `ANTHROPIC_API_KEY` (from console.anthropic.com). Add yourself under *Required reviewers*
+     to approve each spend.
+   - `agent-acceptance` — *Required reviewers*: yourself.
+3. Fork **Settings → Actions → General → Workflow permissions**: tick *Allow GitHub Actions to
+   create and approve pull requests*, then Save.
+4. **Actions → Agent pipeline → Run workflow**: a requirement (the mandatory one is
+   pre-filled), `repo_path` = `demo` for a brownfield change, provider `claude`. To use the
+   issue form in the fork, enable *Issues* under Settings → General → Features.
+
+### Already recorded — inspect without running anything
+
+Four live runs, produced by the final code, are checked in exactly as they came out of the agent:
+
+| What you want to see | Where |
+| --- | --- |
+| The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
+| A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
+| **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
+| A limit made explicit: a **Go** requirement — the design records Go, the validated slice is Python (stated as a limitation in the summary), and its model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
+| The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
+| How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
+
+Each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how),
+and its tests pass from the checkout: `cd examples/llm-run/artifacts && python3 -m unittest discover -s tests`.
+The brownfield change set is re-verified against `demo/` with
+`python3 scripts/verify_change.py examples/llm-run-brownfield --repo demo` (copies `demo/`,
+applies the change, runs the existing tests plus the new ones). `scripts/evaluate.py` does
+both for **every** recorded run each time it runs — the recorded code is re-tested, not just
+its logs.
+
+### C. Run it on your machine
+
+**With a key** (the live model):
 
 ```bash
 git clone https://github.com/ummarvali/AgenticSoftware
@@ -42,41 +117,17 @@ python -m agentic_sdlc --provider claude --file examples/greenfield.txt
 python -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
 ```
 
-A run takes ~5–12 minutes. The recorded runs used `claude-sonnet-5` and cost $0.41–0.53 each
-at its published $2 / $10 per-million-token price. Cost depends on the model: token counts
-are always reported (from the API), while a dollar figure is shown only when the model's
-price is known (a dated table in `llm/client.py`, or `AGENTIC_LLM_PRICE_PER_MTOK="in,out"`);
-otherwise the run reports `cost n/a` instead of guessing. The
-model analyses the requirement, plans a 15–30-task graph, designs the service, writes the
-code, its `openapi.yaml`, its README **and** its tests (unit tests plus integration tests
-that drive every endpoint over HTTP, including error cases); the code is accepted only after
-it passes a static safety scan, compiles, and its own tests pass in a sandbox (one repair
-pass with the real error output if they don't). If the model leaves the contract or README
-out, the Repair agent synthesizes them from the design. The result lands in `runs/<run-id>/`, ending with
-`artifacts/ENGINEERING_SUMMARY.md`. **No key is committed anywhere in this repository.**
+The model analyses the requirement, plans a 15–30-task graph, designs the service, writes the
+code, its `openapi.yaml`, its README **and** its tests (unit tests plus integration tests that
+drive every endpoint over HTTP, including error cases); the code is accepted only after it
+passes a static safety scan, compiles, and its own tests pass in a sandbox (one repair pass
+with the real error output if they don't). The result lands in `runs/<run-id>/`, ending with
+`artifacts/ENGINEERING_SUMMARY.md`. The recorded runs used `claude-sonnet-5` and cost
+$0.41–0.53 each at its published $2 / $10 per-million-token price; token counts are always
+reported, and a dollar figure only when the model's price is known (otherwise `cost n/a`).
+**No key is committed anywhere in this repository.**
 
-**No key to hand? The evidence is already recorded.** Four live runs, produced by the
-final code, are checked in exactly as they came out of `runs/`:
-
-| What you want to see | Where |
-| --- | --- |
-| The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
-| A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
-| **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
-| A limit made explicit: a **Go** requirement — the design records Go, the validated slice is Python (stated as a limitation in the summary), and its model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
-| The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
-| **The production operating model**: the agent as a team pipeline — key in GitHub Secrets, human approval via a GitHub Environment, output as a pull request | [`.github/workflows/agent.yml`](.github/workflows/agent.yml), README [§12](#12-operating-this-in-production--the-sre-view) |
-| How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
-
-Each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how),
-and its tests pass from the checkout: `cd examples/llm-run/artifacts && python3 -m unittest discover -s tests`.
-The brownfield change set is re-verified against `demo/` with
-`python3 scripts/verify_change.py examples/llm-run-brownfield --repo demo` (copies `demo/`,
-applies the change, runs the existing tests plus the new ones). `scripts/evaluate.py` does
-both for **every** recorded run each time it runs — the recorded code is re-tested, not just
-its logs.
-
-**Fallback mode — no key, no third-party packages.** The same agents, gates and validator,
+**Without a key — no third-party packages.** The same agents, gates and validator,
 with the deterministic engine in place of the model (this is also what CI runs):
 
 ```bash
@@ -98,10 +149,6 @@ curl http://127.0.0.1:8000/api/stats/<code>        # click analytics
 
 Containers: `docker build -t agentic-sdlc .` (the agent; pass `-e ANTHROPIC_API_KEY` for the
 live mode) and `docker build -t url-shortener demo` (the demo service).
-
-**Team pipeline — try it without a key:** open an issue from the [*Agent request* form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml) and pick a
-test case; a maintainer approves, the agent runs in GitHub Actions with the key held in GitHub,
-the result is posted on your issue, and an accepted result becomes a pull request. Setup in [§12](#12-operating-this-in-production--the-sre-view).
 
 ---
 
@@ -129,8 +176,11 @@ the result is posted on your issue, and an accepted result becomes a pull reques
    WSGI, OpenAPI, unit + integration tests, a container image — so the fallback is always
    runnable in ten seconds.
 5. **I wrote down what I did not do.** Predictable sequential codes, synchronous click
-   recording, a heuristic brownfield scan, console-only approval gates — see §8–§9. In a
-   prototype the trade-offs matter more than the feature count.
+   recording, a heuristic brownfield scan, a sandbox that is not network-isolated — see
+   §8–§9. In a prototype the trade-offs matter more than the feature count.
+6. **I ran it the way a team would operate it.** A requirement arrives as an issue, the agent
+   runs in GitHub Actions with the key in the secret store, a named person approves the spend
+   and then the result, and the output enters normal code review as a pull request (§12).
 
 I used AI coding assistants as pair-programmers during implementation; the architecture,
 the reliability stance above, and the review of every module are mine.
@@ -199,6 +249,9 @@ Three principles shape the implementation:
 ---
 
 ## 2. Quick start (setup instructions)
+
+**No setup at all:** run it on GitHub from an issue — [TL;DR A](#a-run-it-here-on-github--no-install-no-key).
+The rest of this section is for running it on your own machine.
 
 **Requirement:** Python 3.10+ (developed on 3.12; CI runs 3.10 and 3.12 on Linux and
 Windows). No third-party packages are needed for the core system — the model SDKs are
@@ -447,8 +500,10 @@ three gates (`ConsoleApproval` interactively, or `AutoApprove` for scripted/CI u
 gate rejection halts cleanly while still saving the partial result. **Every run prints which
 gate mode is active and the outcome of each gate** (`[gate 1/3] … auto-approved` / `approved by
 human`) and records it as a `gate` event, so a reviewer of a non-interactive run can see the
-checkpoints were exercised. The console gate is the prototype's UI; `ApprovalGate` is the seam
-for a Slack/Jira/web approval in production.
+checkpoints were exercised. In the GitHub pipeline the in-run gates are automatic (`AutoApprove`,
+which never accepts a failing report) and the human gates are GitHub Environment approvals —
+before the run (spend) and after it (acceptance); see §12. `ApprovalGate` is the seam for any
+other approval system (Slack, Jira, a web UI).
 
 ---
 
@@ -836,6 +891,7 @@ shortener, another greenfield domain, a brownfield change to `demo/`, the ambigu
 app faster.", or your own requirement — and submit. The issue gets a link to the run; once a
 maintainer approves the spend, the console streams live and the result is posted back on the
 issue, followed by the pull request if it is accepted. No key or write access is needed.
+To run it with your own key and approvals instead, fork it — [TL;DR B](#b-run-it-in-your-own-fork--your-key-your-approvals).
 
 Two environments, because they gate two different decisions: `agent-run` is *who may spend
 model credit* (and it holds the key), `agent-acceptance` is *whether the output is good
