@@ -12,7 +12,8 @@ SHORTENER_STORE=sqlite SHORTENER_DB_PATH=shortener.db python -m url_shortener.se
 ```
 
 Environment: `SHORTENER_HOST`, `SHORTENER_PORT`, `SHORTENER_BASE_URL`, `SHORTENER_STORE`
-(`memory` | `sqlite`), `SHORTENER_DB_PATH`.
+(`memory` | `sqlite`), `SHORTENER_DB_PATH`, `SHORTENER_CACHE_SIZE` (max entries kept in the
+in-memory redirect-lookup cache, default `10000`).
 
 ## Try it
 
@@ -24,7 +25,22 @@ curl -X POST http://127.0.0.1:8000/api/shorten \
 
 curl -i http://127.0.0.1:8000/<code>          # 302 redirect
 curl http://127.0.0.1:8000/api/stats/<code>   # click analytics
+curl -X DELETE -i http://127.0.0.1:8000/links/<code>   # 204, then future redirects 404
 ```
+
+## Performance: redirect caching
+
+`GET /<code>` is the hottest path in the service, so link lookups are fronted by a
+bounded, thread-safe in-memory LRU cache (see `url_shortener/cache.py`):
+
+- Reads check the cache first; on a miss they fall back to the store and populate
+  the cache, so repeat requests for the same code avoid the datastore entirely.
+- Expiration is checked lazily on every read (cache or store): an expired entry
+  is evicted from the cache and treated as a miss, so it is never served stale.
+- Deleting a link (`DELETE /links/<code>`) synchronously invalidates its cache
+  entry, so subsequent redirects immediately stop resolving it.
+- The cache is bounded (default 10,000 entries, configurable via
+  `SHORTENER_CACHE_SIZE`) to keep memory use predictable.
 
 ## Test it
 
@@ -38,7 +54,8 @@ python -m unittest discover -s tests -v
 | --- | --- |
 | `url_shortener/base62.py` | id <-> slug codec |
 | `url_shortener/store.py` | in-memory + SQLite backends |
-| `url_shortener/service.py` | validation, shorten, resolve, stats |
+| `url_shortener/cache.py` | bounded, thread-safe LRU cache for redirect lookups |
+| `url_shortener/service.py` | validation, shorten, resolve, delete, stats |
 | `url_shortener/analytics.py` | click aggregation |
 | `url_shortener/api.py` | WSGI HTTP adapter |
 | `url_shortener/server.py` | dev server entrypoint |

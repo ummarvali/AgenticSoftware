@@ -17,7 +17,9 @@ from .store import InMemoryStore, SqliteStore
 
 def build_app() -> WSGIApp:
     store = SqliteStore(config.DB_PATH) if config.STORE_BACKEND == "sqlite" else InMemoryStore()
-    service = ShortenerService(store=store, base_url=config.BASE_URL)
+    service = ShortenerService(
+        store=store, base_url=config.BASE_URL, cache_max_size=config.CACHE_MAX_SIZE
+    )
     return WSGIApp(service=service)
 
 
