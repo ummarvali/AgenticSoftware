@@ -101,6 +101,58 @@ class StaticSafetyScanTests(unittest.TestCase):
         f = self._scan('KEY = "sk-ant-api03-abcdefghijklmnop"\n')
         self.assertTrue(any(x.rule == "hardcoded-secret" for x in f), f)
 
+    def test_proc_introspection_is_high(self):
+        f = self._scan('import os\nopen(f"/proc/{os.getppid()}/environ").read()\n')
+        self.assertTrue(any(x.rule == "process-introspection" and x.severity == "high" for x in f), f)
+
+
+class KeyFileTests(unittest.TestCase):
+    """The pipeline hands the model key over as a file, never in the initial environment."""
+
+    def test_key_file_is_loaded_and_deleted(self):
+        import os
+        from agentic_sdlc.cli import load_key_files
+        with tempfile.TemporaryDirectory() as tmp:
+            key_file = Path(tmp) / "k"
+            key_file.write_text("fake-test-value\n", encoding="utf-8")   # not a real key
+            old = os.environ.pop("ANTHROPIC_API_KEY", None)
+            os.environ["ANTHROPIC_API_KEY_FILE"] = str(key_file)
+            try:
+                self.assertEqual(load_key_files(), ["ANTHROPIC_API_KEY"])
+                self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "fake-test-value")
+                self.assertFalse(key_file.exists())
+                self.assertNotIn("ANTHROPIC_API_KEY_FILE", os.environ)
+            finally:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+                if old is not None:
+                    os.environ["ANTHROPIC_API_KEY"] = old
+
+    @unittest.skipUnless(Path("/proc/self/environ").exists(), "needs Linux /proc")
+    def test_child_cannot_read_key_from_parent_environ(self):
+        import subprocess
+        import sys
+        # A parent that loads the key from a file, then runs a child that tries to read
+        # the parent's environment through /proc - what a malicious generated test would do.
+        parent = (
+            "import os, subprocess, sys\n"
+            "from agentic_sdlc.cli import load_key_files\n"
+            "load_key_files()\n"
+            "assert os.environ['ANTHROPIC_API_KEY'] == 'fake-marker-7f3a'\n"
+            "child = 'import os; print(open(\"/proc/%d/environ\" % os.getppid(), \"rb\").read())'\n"
+            "env = {k: v for k, v in os.environ.items() if 'KEY' not in k}\n"
+            "print(subprocess.run([sys.executable, '-c', child], env=env, capture_output=True, text=True).stdout)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            key_file = Path(tmp) / "k"
+            key_file.write_text("fake-marker-7f3a", encoding="utf-8")   # not a real key
+            env = {k: v for k, v in __import__("os").environ.items() if "KEY" not in k}
+            env["ANTHROPIC_API_KEY_FILE"] = str(key_file)
+            out = subprocess.run([sys.executable, "-c", parent], env=env,
+                                 capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue(out.stdout.strip().startswith("b"), out.stdout)   # the child did read /proc
+        self.assertNotIn("fake-marker-7f3a", out.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

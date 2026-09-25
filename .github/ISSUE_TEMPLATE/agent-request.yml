@@ -6,6 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
+        Keep the `[agent]` prefix in the title — it is what starts the run.
         Opening this issue starts the **Agent pipeline** (Actions tab). A maintainer approves
         the run before the model is called; the agent then plans, builds and validates, and
         posts its result here. If the maintainer accepts it, a pull request follows.

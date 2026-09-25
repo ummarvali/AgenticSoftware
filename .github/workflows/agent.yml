@@ -96,7 +96,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$OK" = true ]; then
-            msg="Request received — [pipeline run]($RUN_URL). A maintainer approves the run before the model is called; the result will be posted here (about 6–12 minutes after approval)."
+            msg="Request received — [pipeline run]($RUN_URL). **Waiting for a maintainer to approve the spend** (a manual step, so it can take a while). The run then takes about 6–12 minutes and its result is posted here."
           else
             msg="This request could not be started: ${ERROR:-invalid request}. Please open a new issue from the **Agent request** form."
           fi
@@ -112,18 +112,40 @@ jobs:
       run_id: ${{ steps.agent.outputs.run_id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false      # no token left in .git/config for generated code to find
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install (model SDKs are optional extras)
         run: python -m pip install -e ".[anthropic,llm]"
+      - name: Hand the model key to the agent as a file (never in its environment)
+        id: key
+        env:
+          # The secret exists only in this short step (and is empty unless the run is on
+          # main: the environment's branch rule). It is written to a private file that the
+          # agent reads and deletes at start-up, so the key is never in the agent's initial
+          # environment, which is what /proc/<pid>/environ exposes to child processes such
+          # as the model-written tests the agent executes during validation.
+          PROVIDER: ${{ needs.request.outputs.provider }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          umask 077
+          case "$PROVIDER" in
+            claude) name=ANTHROPIC_API_KEY; value="$ANTHROPIC_API_KEY" ;;
+            openai) name=OPENAI_API_KEY; value="$OPENAI_API_KEY" ;;
+            *) exit 0 ;;
+          esac
+          # Fail fast without a key: otherwise every stage would fall back to the
+          # deterministic engine and template output would reach review.
+          if [ -z "$value" ]; then echo "::error::secret $name is not set"; exit 1; fi
+          printf '%s' "$value" > "$RUNNER_TEMP/model.key"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - name: Run the agent (non-interactive; human approval happens in the next job)
         id: agent
         env:
-          # The key reaches only this job, only for this step, never the approval job.
-          # (Empty unless the run is on main: the environment's branch rule.)
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          KEY_VAR: ${{ steps.key.outputs.name }}
           PYTHONPATH: src
           # Inputs are passed as environment variables, never interpolated into the
           # script, so a crafted requirement cannot inject shell commands.
@@ -132,12 +154,7 @@ jobs:
           PROVIDER: ${{ needs.request.outputs.provider }}
         run: |
           set +e
-          # Fail fast if the chosen model has no key: otherwise every stage would fall
-          # back to the deterministic engine and template output would reach review.
-          if [ "$PROVIDER" = claude ] && [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "::error::secret ANTHROPIC_API_KEY is not set"; exit 1; fi
-          if [ "$PROVIDER" = openai ] && [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::secret OPENAI_API_KEY is not set"; exit 1; fi
+          if [ -n "$KEY_VAR" ]; then export "${KEY_VAR}_FILE=$RUNNER_TEMP/model.key"; fi
           args=(--provider "$PROVIDER" --output-root runs)
           if [ -n "$REPO_PATH" ]; then args+=(--repo "$REPO_PATH"); fi
           # "--" so a requirement starting with "-" is never read as an option.
@@ -168,6 +185,7 @@ jobs:
           name: agent-run
           path: runs/
           retention-days: 30
+          overwrite: true                 # a re-run replaces the record instead of failing
 
   report:
     name: post the result on the issue
@@ -221,6 +239,9 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      # This job holds a write token, so it never executes generated code: it only copies
+      # the accepted files onto a branch. The code was compiled, scanned and tested in the
+      # read-only agent-run job.
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -263,3 +284,22 @@ jobs:
             gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" \
               --body "Accepted by a maintainer — pull request: $pr_url"
           fi
+
+  not-accepted:
+    name: tell the issue when a result is not accepted
+    needs: [request, run-agent, accept]
+    if: >-
+      always() && github.event_name == 'issues'
+      && needs.run-agent.result == 'success' && needs.accept.result != 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body \
+            "Not accepted: the maintainer rejected this result at review, or the pull-request step failed ([pipeline run]($RUN_URL)). No pull request will be opened for this run."

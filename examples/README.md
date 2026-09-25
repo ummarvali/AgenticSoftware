@@ -1,6 +1,9 @@
 # Example Scenarios
 
-The primary mode is the **live model** — four recorded runs are described in
+The primary way to run these is the **GitHub Actions pipeline**: open an issue from the
+[Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)
+and pick the matching test case (examples: [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) greenfield, [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) →
+[PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) brownfield). Four earlier CLI runs on the live model are described in
 [§4](#4-live-model--examplesllm-run-recorded). The three requirement files below exercise
 the three input classes (greenfield, brownfield, ambiguous); the commands shown run them
 on the offline fallback so they work without a key (add `--provider claude` to run them live).
@@ -110,7 +113,7 @@ Refresh a folder after your own run: `python scripts/snapshot_run.py --name <fol
 python -m agentic_sdlc --inject-fault code:1 --file examples/greenfield.txt
 
 # 'docs' is optional: repeated failure degrades gracefully instead of halting:
-python -m agentic_sdlc --inject-fault docs:5 --file examples/greenfield.txt
+python -m agentic_sdlc --inject-fault docs:9 --file examples/greenfield.txt
 
 # a required task that never recovers halts the run cleanly (partial result saved):
 python -m agentic_sdlc --inject-fault code:9 --file examples/greenfield.txt

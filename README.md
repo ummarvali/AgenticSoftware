@@ -2,17 +2,20 @@
 
 [![CI](https://github.com/ummarvali/AgenticSoftware/actions/workflows/ci.yml/badge.svg)](https://github.com/ummarvali/AgenticSoftware/actions/workflows/ci.yml)
 
-An **agentic software-engineering system** that takes a plain-language requirement and
-drives it across the SDLC — understand → decompose → orchestrate → generate → **validate** —
-producing production-shaped code, an API contract, tests, docs, and a structured
-engineering summary, all under **controlled autonomy** (agents act, humans approve).
+An **agentic software-engineering system**, operated as a **GitHub Actions pipeline**: a
+requirement arrives as an issue, a maintainer approves the spend, agents drive it across the
+SDLC in Actions — understand → decompose → orchestrate → generate → **validate** — the result
+(code, API contract, tests, docs and a structured engineering summary) is posted on the issue,
+and an accepted result becomes a pull request. **Controlled autonomy**: agents act, humans
+approve.
 
 > Built for the mandatory use case: *"Build a scalable URL shortener service with APIs,
 > persistence, and analytics."* — and it also handles greenfield work, brownfield changes
 > to an existing repository (enhancements, bug fixes, refactors, test and documentation
 > improvements — proposed as a validated change set, never applied), and ambiguous
-> requirements. (Recorded brownfield evidence: one enhancement; bug fixes and refactors take
-> the same change-mode path but are not recorded.)
+> requirements. (Recorded brownfield evidence: rate-limiting enhancements, from the CLI and
+> through the pipeline in PR #3; bug fixes, refactors and test/doc changes take the same
+> change-mode path.)
 
 - **Model-driven by design** — a live LLM (Claude / OpenAI / Azure / any OpenAI-compatible
   endpoint) analyses the requirement, plans the task graph, designs the architecture and
@@ -83,7 +86,7 @@ pipeline is built and secured: [§12](#12-operating-this-in-production--the-sre-
 
 ### Already recorded — inspect without running anything
 
-A pipeline run on GitHub, plus four live runs produced by the final code and checked in exactly as they came out of the agent:
+Pipeline runs on GitHub, plus four earlier live runs from the CLI, checked in exactly as they came out of the agent:
 
 | What you want to see | Where |
 | --- | --- |
@@ -116,7 +119,7 @@ source .venv/bin/activate                          # PowerShell: .venv\Scripts\A
 pip install -e ".[anthropic]"                      # or ".[llm]" for OpenAI / Azure / Gemini
 export ANTHROPIC_API_KEY="<your key>"              # PowerShell: $env:ANTHROPIC_API_KEY = "<your key>"
 python -m agentic_sdlc --provider claude --file examples/greenfield.txt
-python -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
+python -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve the 3 in-run gates yourself
 ```
 
 The model analyses the requirement, plans a 15–30-task graph, designs the service, writes the
@@ -124,8 +127,8 @@ code, its `openapi.yaml`, its README **and** its tests (unit tests plus integrat
 drive every endpoint over HTTP, including error cases); the code is accepted only after it
 passes a static safety scan, compiles, and its own tests pass in a sandbox (one repair pass
 with the real error output if they don't). The result lands in `runs/<run-id>/`, ending with
-`artifacts/ENGINEERING_SUMMARY.md`. The recorded runs used `claude-sonnet-5` and cost
-$0.41–0.53 each at its published $2 / $10 per-million-token price; token counts are always
+`artifacts/ENGINEERING_SUMMARY.md`. Live runs used `claude-sonnet-5` and cost $0.37–0.67 each
+at its published $2 / $10 per-million-token price; token counts are always
 reported, and a dollar figure only when the model's price is known (otherwise `cost n/a`).
 **No key is committed anywhere in this repository.**
 
@@ -134,7 +137,7 @@ with the deterministic engine in place of the model (this is also what CI runs):
 
 ```bash
 export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
-python3 -m unittest discover -s tests                   # 72 tests, OK
+python3 -m unittest discover -s tests                   # 75 tests, OK
 python3 -m agentic_sdlc --file examples/greenfield.txt  # plan, build, validate, report — offline
 python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 4 recorded live runs, re-tested now
 ```
@@ -275,7 +278,7 @@ Or drive it yourself — **Linux / macOS / WSL**:
 cd AgenticSoftware
 export PYTHONPATH=src
 python3 -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
-python3 -m unittest discover -s tests -v          # 72 framework tests
+python3 -m unittest discover -s tests -v          # 75 framework tests
 python3 -m agentic_sdlc --interactive --file examples/greenfield.txt   # human approves each gate
 ```
 
@@ -313,8 +316,8 @@ python -m pip install -e ".[dev]"; pytest        # or with pytest
 
 **Run on a real model (Claude):**
 
-The system was developed and exercised end to end against a real Anthropic key; the four
-recorded runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
+The system was developed and exercised end to end against a real Anthropic key; the pipeline
+runs ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
 this repository and none is needed to run, test or evaluate it** — without a key the same
 pipeline runs on the deterministic engine. To reproduce a live run yourself:
 
@@ -369,8 +372,9 @@ Override the root with `--output-root`. Nothing is written anywhere else.
   change applied**: static scan of the changed files, compile, then the repository's own
   test suite plus the new tests — a regression fails the gate (one repair pass, then the
   deterministic engine). The workspace receives the changed files and `CHANGES.diff`; the
-  repository is never written. The production extension is "apply `CHANGES.diff` to a
-  branch → CI → open a PR", behind the same acceptance gate.
+  repository is never written. In the GitHub pipeline this is implemented: after the
+  `agent-acceptance` approval the change is written to a branch and a pull request is opened
+  (§12).
 
   ```bash
   python3 -m agentic_sdlc --provider claude --repo demo --file examples/brownfield.txt
@@ -379,7 +383,8 @@ Override the root with `--output-root`. Nothing is written anywhere else.
 
 This is the same model as a CI job workspace or an artifact store: the outcome is a
 *reviewable proposal*, not a change already applied. `runs/` is git-ignored — the
-**committed evidence** is `demo/` (the deterministic output for the mandatory requirement)
+**committed evidence** is the pipeline pull requests ([#1](https://github.com/ummarvali/AgenticSoftware/pull/1), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3) — left unmerged on
+purpose), `demo/` (the deterministic output for the mandatory requirement)
 and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 `scripts/snapshot_run.py`, which scrubs anything key-shaped).
 
@@ -387,10 +392,11 @@ and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 
 ## 3. The mandatory use case, end to end
 
-The transcript below is the **offline fallback** (no key), because it is short and
-reproducible. The same requirement on a live model — 20+ tasks, model-authored code, a
-sandbox gate — is recorded in [`examples/llm-run/`](examples/llm-run/): read its
-`artifacts/ENGINEERING_SUMMARY.md` and `result.json`.
+**Primary evidence:** the pipeline [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) — the
+mandatory requirement through GitHub Actions, with 28 model-written tests and the summary as
+the PR description. A CLI run of the same requirement is recorded in
+[`examples/llm-run/`](examples/llm-run/). The transcript below is the **offline fallback**
+(no key), shown because it is short and reproducible.
 
 ```
 $ python -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
@@ -529,7 +535,9 @@ Highlights:
   question gets a recorded default assumption shown at the clarification gate; validation
   first fails 4/5 (no contract), the Repair agent adds it, re-validation passes 5/5. The
   control against a false "done" is the clarification gate — in `--interactive` mode a human
-  answers or rejects there — not the validator.
+  answers or rejects there — not the validator. In the GitHub pipeline no human sees these
+  assumptions before the run: they are listed in the summary posted on the issue and judged at
+  the acceptance approval.
 
 ---
 
@@ -622,7 +630,7 @@ AgenticSoftware/
 
 Correctness and output quality are validated at **four** levels:
 
-1. **Framework tests** (`tests/`, 72 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 75 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
    **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
@@ -641,7 +649,7 @@ Correctness and output quality are validated at **four** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 72 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 75 tests ... OK
 ```
 
 4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
@@ -660,7 +668,7 @@ $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 72
 | An agent step fails transiently | Retry-with-backoff, then degrade (optional) or halt (required) |
 | A bad/hostile artifact path | `ArtifactStore` rejects any path escaping the sandbox |
 | A runaway generated test hangs the run | Test subprocess has a hard timeout |
-| Over-trusting autonomy | Three human approval gates; rejection halts and saves state; the interactive gate **fails closed** (no input = reject); auto mode **never accepts a failing report** at the final gate |
+| Over-trusting autonomy | Pipeline: two named approvals (spend before the run, acceptance after it). CLI: three in-run gates (clarify, plan, accept), human with `--interactive`. Rejection halts and saves state; the interactive gate **fails closed** (no input = reject); auto mode **never accepts a failing report** at the final gate |
 | Ambiguous input yields a false "done" | Ambiguity is surfaced as explicit default assumptions at the clarification gate (a human answers them in `--interactive`); the repair loop only fixes missing artifacts, never failing tests |
 | **LLM-authored code may not run** | Provider compiles + runs the generated tests in a sandbox; on rejection the sandbox output is fed back to the model for one repair pass; accepts only on pass, else falls back to the verified template |
 | **In-memory store is non-durable** | SQLite backend provided and unit-tested; `SHORTENER_STORE=sqlite` + `SHORTENER_DB_PATH` select it (`demo/url_shortener/server.py`) |
@@ -701,7 +709,7 @@ Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
 | **Design promises more than the code delivers** | The design prompt pins the **implementation target** (Python standard library, single process, in-memory/SQLite) so the model cannot decide on a stack the slice will not implement — production evolutions go to trade-offs, phrased as prototype-vs-production; the summary computes **design ↔ implementation coverage** (which designed endpoints the generated slice actually serves), the repaired API contract documents only implemented endpoints, standing **risks are derived from the produced slice** (its persistence, its auth) rather than copied from the design, a requirement naming a non-Python target gets an explicit limitation line, and every live summary states that individual design decisions are *not* verified against the code | The model's design decisions (e.g. "async queue", "required Idempotency-Key header") are not all implemented by its code; only endpoints, compilation, the scan and the model's own tests are verified. A Critic agent (semantic design↔code↔tests review) is the next step |
 | **Drift within a run** (scope creep, loops) | One output schema per agent; agents cannot add tasks; the DAG bounds the work; `reuse` decisions prevent repeated work; bounded repair iterations; call + cost circuit breaker | — |
 | **Drift over time** (model / prompt changes) | The deterministic suite is a fixed regression baseline; recorded live runs in `examples/llm-run*` are golden snapshots; `scripts/evaluate.py` scores every scenario and runs in CI on every push | Live runs are not re-executed in CI (cost, non-determinism) — they are scored from their recorded `result.json` |
-| **Overreach** (an agent doing more than allowed) | Least privilege by construction: an agent's only tools are a sandboxed file store and a subprocess runner — no shell, no network tool, no git, no deploy. Agents never call each other or the model's tools; the model returns data, Python decides. Three human gates | The sandbox is process-level, not network-isolated (see above) |
+| **Overreach** (an agent doing more than allowed) | Least privilege by construction: an agent's only tools are a sandboxed file store and a subprocess runner — no shell, no network tool, no git, no deploy. Agents never call each other or the model's tools; the model returns data, Python decides. Spend and acceptance approvals (pipeline); three gates with `--interactive` (CLI) | The sandbox is process-level, not network-isolated (see above) |
 | **Fail-closed by default** | No key → deterministic; bad reply → per-stage fallback; compile failure → halt for a human; any failing check → `REVIEW NEEDED`, never `PASS`, and auto mode does not accept it; no console input → gate rejects; partial runs always persisted | — |
 
 **Memory.** Working memory is the `Blackboard` — one shared, lock-guarded object per run and
@@ -730,8 +738,8 @@ through the firm's gateway, with allow-listed servers.
 
 Six offline scenarios are scored deterministically (greenfield, brownfield, ambiguous → repair,
 retry recovery, optional-task degradation, required-task halt). Recorded live-model runs under
-`examples/llm-run*` are scored from their `result.json`, so the model path is evaluated without
-a key and without non-determinism in CI.
+`examples/llm-run*` are scored from their `result.json` and their code is re-tested, so the
+model path is evaluated without a key and without non-determinism in CI.
 
 ### Security — what is enforced, and what is not
 
@@ -753,7 +761,15 @@ Enforced:
   passes the scan and runs in the sandbox, which is not network-isolated (see below).
 - **Bounded execution**: per-call timeouts, bounded retries, bounded repair iterations,
   bounded spend.
-- **Human approval gates** at clarification, plan, and acceptance; a rejection halts.
+- **Human approval**: in the pipeline, GitHub Environment approvals before the run (spend)
+  and after it (acceptance); locally, gates at clarification, plan and acceptance with
+  `--interactive`. A rejection halts.
+- **The model key in the pipeline** exists only in one short step, which writes it to a private
+  file; the agent reads and deletes that file at start-up, so the key is never in the agent's
+  initial environment — the part `/proc/<pid>/environ` exposes to child processes such as the
+  model-written tests it executes (a test proves this). The static scan also rejects code that
+  names `/proc/`. The checkout keeps no token, and the job that holds a write token never
+  executes generated code.
 - **Container**: the demo image runs as a non-root user with a health check.
 
 Not enforced in this prototype (documented, would be required for production):
@@ -761,9 +777,11 @@ Not enforced in this prototype (documented, would be required for production):
 - The validation sandbox is a temp directory + isolated-mode subprocess with a timeout and
   a scrubbed environment — **not** a network-isolated container or a separate OS user.
   Model-authored tests can still reach the network and the host filesystem within the
-  process's permissions, and on Linux a same-user process can read its parent's
-  environment through `/proc` — so the agent should not run with a key in an environment
-  where that matters. The static scan (which runs first) is a guardrail, not a sandbox. In
+  process's permissions. The key is kept out of their reach as described above (it is not in
+  any environment they can read), but they run as the same user with network access on the
+  runner, so the `agent-run` approver reads the requirement before approving, and the key is
+  dedicated to the pipeline with a spend limit. The static scan (which runs first) is a
+  guardrail, not a sandbox. In
   production this step runs in an ephemeral, no-network container under a separate user
   (gVisor/Firecracker), and the key comes from a secret store.
 - The deterministic URL shortener is an **open redirect by design** (any `http(s)` target),
@@ -799,6 +817,16 @@ Not enforced in this prototype (documented, would be required for production):
   and trusted a client-chosen header as its rate-limit key — found at code review. The
   code-generation prompts now carry explicit security rules; a security-review agent before
   the acceptance gate is the next step, and human review of the pull request stays mandatory.
+- **The task graph is for traceability more than execution granularity.** With a live model
+  each stage is one model call (analysis, plan, design, code+tests), and most planned tasks
+  are logged as `reuse` of that output (the CLI URL-shortener run: 23 of 29) — the plan shows
+  what was covered and why, not 29 separate generations.
+- **"Scalable" is designed, not load-tested.** The scaling path (sharded store, cache,
+  async analytics, stateless replicas) is in each design and its trade-offs; the generated
+  slice is a single process and no load test is run.
+- **Pipeline pull requests are not re-tested by CI**: pull requests opened with the default
+  `GITHUB_TOKEN` do not trigger workflows. Their code was compiled, scanned and tested in the
+  agent run; a GitHub App token would make CI run on them too.
 - Generated code is validated on the platform the agent runs on. The recorded services were
   generated and gate-validated on Linux; CI re-tests them on Linux, and on Windows the
   scorecard reports that re-test as skipped (generated code is not guaranteed to be portable —
@@ -830,13 +858,13 @@ Not enforced in this prototype (documented, would be required for production):
 | Agent autonomy (perceive → decide → act) | `agents/base.py`, `decision` events per agent |
 | Code / API contract / tests / docs | LLM-authored + sandbox-gated (`llm/llm_provider.py`); verified template (`knowledge/url_shortener.py`) |
 | Validation & guardrails | `agents/validator.py` (5 checks greenfield, 6 in change mode, incl. AST safety scan), `tools/*`, sandbox + timeout |
-| Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py` |
+| Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py`; `agent.yml` environments `agent-run` / `agent-acceptance` |
 | Final structured engineering summary (plan as executed, rationale + decision log, artifacts, **validation approach + per-check results**, run monitoring, risks, trade-offs, assumptions, limitations) | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |
 | LLM reasoning + reliability fallback | `llm/llm_provider.py`, `llm/client.py` |
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
-| Evidence of the model-driven path | `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
+| Evidence of the model-driven path | pipeline runs → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Controlled autonomy in a team setting | `.github/workflows/agent.yml` — request via issue form, spend approval, agent run in CI, acceptance approval, PR on acceptance |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
@@ -930,9 +958,9 @@ requests (Actions → General → Workflow permissions). Pull requests opened wi
 `GITHUB_TOKEN` do not trigger other workflows — a GitHub App token would let CI run on them
 automatically.
 
-- **Hosting & triggers:** the same job runs anywhere a container runs (Argo Workflows /
-  Kubernetes Job — the root `Dockerfile` is the unit of deployment), triggered by a ticket, a
-  PR comment or an API call; any approval system plugs in through the `ApprovalGate` seam.
+- **Hosting & triggers:** here the job runs on a GitHub-hosted runner; the root `Dockerfile`
+  packages the same agent for Argo Workflows / a Kubernetes Job, triggered by a ticket, a PR
+  comment or an API call; any approval system plugs in through the `ApprovalGate` seam.
 - **SLOs for the agent itself:** run success rate, validation pass rate, LLM fallback rate,
   p95 run duration, cost per run — all already emitted in `result.json` (`metrics.run`,
   `metrics.llm`) and ready to ship to Prometheus/OpenTelemetry.

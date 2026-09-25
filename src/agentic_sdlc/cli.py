@@ -15,6 +15,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -28,6 +29,36 @@ def _parse_faults(values: list[str] | None) -> dict[str, int]:
         category, _, times = item.partition(":")
         faults[category] = int(times or "1")
     return faults
+
+
+_KEY_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+
+
+def load_key_files() -> list[str]:
+    """Read model keys from ``<NAME>_FILE`` paths, delete the files, keep keys in memory only.
+
+    Used by the GitHub pipeline so the key is never in this process's *initial*
+    environment: /proc/<pid>/environ shows only that initial block, so code that the
+    agent executes during validation (model-written tests, run as a child process)
+    cannot read the key from its parent. The in-process value is used by the model
+    SDK; children never inherit it (``CodeRunner.scrubbed_env``).
+    """
+    loaded = []
+    for name in _KEY_VARS:
+        path = os.environ.pop(f"{name}_FILE", None)
+        if not path:
+            continue
+        try:
+            value = Path(path).read_text(encoding="utf-8").strip()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        if value:
+            os.environ[name] = value
+            loaded.append(name)
+    return loaded
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
     args = build_parser().parse_args(argv)
+    load_key_files()
 
     text = args.requirement
     if args.file:

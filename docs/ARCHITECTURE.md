@@ -6,6 +6,9 @@ The Agentic SDLC system transforms a natural-language software requirement into 
 **reviewable engineering outcome**: a normalized problem statement, a dependency-aware
 plan, generated code + API contract + tests + docs, a validation report, and a final
 engineering summary — produced under **controlled autonomy** (agents act, humans approve).
+It is operated as a **GitHub Actions pipeline** (§7): the components below run inside one
+job of that pipeline, between a human approval of the spend and a human acceptance of the
+result.
 
 ## 2. Component model
 
@@ -151,3 +154,32 @@ changed files plus `CHANGES.diff`, and the repository is never written.
 - **Live model (primary):** set `--provider claude` (or `openai`); the model drives
   analysis, decomposition, design and code + test generation, with per-stage deterministic
   fallback and usage metrics (tokens, latency, cost, retries, fallbacks).
+
+## 7. Operating model — the GitHub Actions pipeline
+
+`.github/workflows/agent.yml` runs the system for a team. Each box is a job; the two ⏸ are
+GitHub Environment approvals by named reviewers.
+
+```mermaid
+flowchart LR
+    ISS["Issue from the<br/>Agent request form"] --> REQ["request<br/>parse + validate<br/>(pipeline_request.py)"]
+    DISP["Run workflow<br/>(maintainers)"] --> REQ
+    REQ --> G1{"⏸ agent-run<br/>approve spend"}
+    G1 --> RUN["agent run<br/>orchestrator + agents<br/>(§2–§3), in-run gates auto"]
+    RUN --> ART[("run record<br/>artifact")]
+    RUN --> REP["report<br/>result on the issue"]
+    RUN --> G2{"⏸ agent-acceptance<br/>accept result"}
+    G2 --> PR["pull request<br/>(apply_change.py)"]
+```
+
+| Concern | How the pipeline handles it |
+| --- | --- |
+| Untrusted input | Issue text is parsed as data: preset scenarios, a length cap, an allow-listed target folder; it reaches the agent only through environment variables. |
+| The model key | An environment secret of `agent-run` (main branch only), handed to the agent as a file that it reads and deletes, so it is never in the agent's initial environment and model-written tests cannot read it from `/proc`. |
+| Least privilege | The agent job has a read-only token and keeps no credentials in the checkout; only the acceptance job can write, and it never executes generated code. |
+| Honest failure | A failed check, a halted run, or any model stage that fell back to the offline engine fails the agent job, so it is never offered for acceptance; the issue is told either way. |
+| Audit trail | The console log, the step summary, the run record (artifact, 30 days), the issue thread and the pull request. |
+
+In the pipeline the orchestrator's three in-run gates are automatic (`AutoApprove`, which never
+accepts a failing report); the human decisions are the two environment approvals. Examples:
+[run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (greenfield), [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) (brownfield).

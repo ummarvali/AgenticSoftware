@@ -9,6 +9,8 @@ flags the things a bank's code reviewer would refuse on sight:
 * **imports outside the standard library** — the generated service is required to be
   stdlib-only (no unpinned or outdated third-party packages can sneak in);
 * **hard-coded secrets** — string literals that look like API keys or tokens;
+* **process introspection** — string literals naming ``/proc/`` (reading another process's
+  environment or memory, e.g. the agent's own);
 * **stdlib shadowing** — a generated top-level module named like a standard-library
   module (e.g. ``unittest.py``) could subvert the test run itself.
 
@@ -126,6 +128,9 @@ def scan_file(path: Path, *, local_packages: set[str] | None = None) -> list[Fin
                     findings.append(Finding(rel, node.lineno, "high", "non-stdlib-import",
                                             f"'{top}' is not in the standard library"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if "/proc/" in node.value:
+                findings.append(Finding(rel, node.lineno, "high", "process-introspection",
+                                        "reads /proc (other processes' memory or environment)"))
             if _SECRET_RE.search(node.value):
                 findings.append(Finding(rel, node.lineno, "high", "hardcoded-secret",
                                         "string literal looks like an API key/token"))
