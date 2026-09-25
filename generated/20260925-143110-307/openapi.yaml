@@ -1,0 +1,224 @@
+openapi: 3.0.3
+info:
+  title: URL Shortener API
+  version: "1.0.0"
+  description: >
+    Prototype URL shortener service: create short links, redirect visitors,
+    and retrieve click analytics. Backed by SQLite with an in-process LRU
+    cache for hot redirects.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/v1/urls:
+    post:
+      summary: Create a shortened URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [long_url]
+              properties:
+                long_url:
+                  type: string
+                  format: uri
+                custom_alias:
+                  type: string
+                ttl_seconds:
+                  type: integer
+      responses:
+        '201':
+          description: Short URL created (or an existing one reused)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUrlResponse'
+        '400':
+          description: Invalid input (bad URL, bad alias, bad ttl)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /{short_code}:
+    get:
+      summary: Redirect to the original long URL
+      parameters:
+        - name: short_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to original long URL
+          headers:
+            Location:
+              schema:
+                type: string
+        '404':
+          description: Short code not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Short code expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/urls/{short_code}:
+    get:
+      summary: Get metadata for a short URL
+      parameters:
+        - name: short_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: URL metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UrlInfo'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/urls/{short_code}/analytics:
+    get:
+      summary: Get click analytics for a short URL
+      parameters:
+        - name: short_code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Analytics'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/keys:
+    post:
+      summary: Create a new API key (self-service, rate-limited by caller IP)
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Service is degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /metrics:
+    get:
+      summary: Prometheus-style text metrics
+      responses:
+        '200':
+          description: Metrics snapshot
+          content:
+            text/plain:
+              schema:
+                type: string
+  /openapi.json:
+    get:
+      summary: This OpenAPI document as JSON
+      responses:
+        '200':
+          description: OpenAPI document
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  schemas:
+    CreateUrlResponse:
+      type: object
+      properties:
+        short_code: {type: string}
+        short_url: {type: string}
+        long_url: {type: string}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time, nullable: true}
+        reused_existing: {type: boolean}
+    UrlInfo:
+      type: object
+      properties:
+        short_code: {type: string}
+        long_url: {type: string}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time, nullable: true}
+        click_count: {type: integer}
+    Analytics:
+      type: object
+      properties:
+        short_code: {type: string}
+        total_clicks: {type: integer}
+        clicks_by_referrer:
+          type: object
+          additionalProperties:
+            type: integer
+        recent_events:
+          type: array
+          items:
+            type: object
+            properties:
+              clicked_at: {type: string, format: date-time}
+              referrer: {type: string, nullable: true}
+              user_agent: {type: string, nullable: true}
+    ApiKey:
+      type: object
+      properties:
+        api_key: {type: string}
+        rate_limit_per_min: {type: integer}
+        created_at: {type: string, format: date-time}
+    Health:
+      type: object
+      properties:
+        status: {type: string, enum: [ok, degraded]}
+        db: {type: string, enum: [ok, error]}
+        cache_size: {type: integer}
+    Error:
+      type: object
+      properties:
+        error: {type: string}
