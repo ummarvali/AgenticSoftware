@@ -39,6 +39,7 @@ class Store(Protocol):
     def create_link(self, record: LinkRecord) -> LinkRecord: ...
     def get(self, code: str) -> Optional[LinkRecord]: ...
     def find_by_url(self, long_url: str) -> Optional[LinkRecord]: ...
+    def delete(self, code: str) -> bool: ...
     def record_click(self, code: str, ts: float, referrer, user_agent) -> None: ...
     def click_count(self, code: str) -> int: ...
     def clicks(self, code: str) -> list: ...
@@ -71,6 +72,15 @@ class InMemoryStore:
     def find_by_url(self, long_url: str) -> Optional[LinkRecord]:
         code = self._by_url.get(long_url)
         return self._links.get(code) if code else None
+
+    def delete(self, code: str) -> bool:
+        record = self._links.pop(code, None)
+        if record is None:
+            return False
+        if self._by_url.get(record.long_url) == code:
+            del self._by_url[record.long_url]
+        self._clicks.pop(code, None)
+        return True
 
     def record_click(self, code: str, ts: float, referrer, user_agent) -> None:
         self._clicks.setdefault(code, []).append(
@@ -135,6 +145,12 @@ class SqliteStore:
             (long_url,),
         ).fetchone()
         return self._to_record(row) if row else None
+
+    def delete(self, code: str) -> bool:
+        cur = self._conn.execute("DELETE FROM links WHERE code = ?", (code,))
+        self._conn.execute("DELETE FROM clicks WHERE code = ?", (code,))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def record_click(self, code: str, ts: float, referrer, user_agent) -> None:
         self._conn.execute(

@@ -8,6 +8,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from . import base62
+from .cache import DEFAULT_MAX_SIZE, LRUCache
 from .store import InMemoryStore, LinkRecord, Store
 
 # Offset so the smallest auto-generated code is already several characters long,
@@ -25,11 +26,25 @@ class AliasError(ValueError):
 
 
 class ShortenerService:
-    """Framework-agnostic core. The API layer is a thin adapter over this class."""
+    """Framework-agnostic core. The API layer is a thin adapter over this class.
 
-    def __init__(self, store: Optional[Store] = None, base_url: str = "http://localhost:8000") -> None:
+    The hot redirect path (``resolve``) is fronted by a bounded, thread-safe
+    in-memory LRU cache keyed by short code. Reads check the cache first and
+    fall back to the store on a miss, populating the cache. Expiration is
+    checked lazily on every read (cache or store), and deletions synchronously
+    invalidate the cache entry so a deleted/expired link is never served stale.
+    """
+
+    def __init__(
+        self,
+        store: Optional[Store] = None,
+        base_url: str = "http://localhost:8000",
+        cache: Optional[LRUCache] = None,
+        cache_max_size: int = DEFAULT_MAX_SIZE,
+    ) -> None:
         self._store: Store = store or InMemoryStore()
         self.base_url = base_url.rstrip("/")
+        self._cache: LRUCache = cache if cache is not None else LRUCache(max_size=cache_max_size)
 
     @property
     def store(self) -> Store:
@@ -73,14 +88,32 @@ class ShortenerService:
         user_agent: Optional[str] = None,
         now: Optional[float] = None,
     ) -> Optional[str]:
-        record = self._store.get(code)
-        if record is None:
-            return None
         now = time.time() if now is None else now
+
+        record = self._cache.get(code)
+        if record is None:
+            record = self._store.get(code)
+            if record is None:
+                return None
+            self._cache.put(code, record)
+
         if record.is_expired(now):
+            # Lazily evict stale/expired entries so neither the cache nor a
+            # subsequent lookup can ever serve them again.
+            self._cache.invalidate(code)
             return None
+
         self._store.record_click(code, now, referrer, user_agent)
         return record.long_url
+
+    def delete_link(self, code: str) -> bool:
+        """Delete a link and synchronously invalidate its cache entry.
+
+        Returns True if a link existed and was deleted, False otherwise.
+        """
+        deleted = self._store.delete(code)
+        self._cache.invalidate(code)
+        return deleted
 
     def stats(self, code: str) -> Optional[dict]:
         record = self._store.get(code)

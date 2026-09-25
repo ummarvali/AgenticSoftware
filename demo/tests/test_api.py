@@ -63,6 +63,36 @@ class ApiTests(unittest.TestCase):
         status, _, _ = call(self.app, "GET", "/nope")
         self.assertEqual(status, 404)
 
+    def test_redirect_is_cached_and_still_correct_on_repeat(self):
+        _, _, body = call(
+            self.app, "POST", "/api/shorten", json.dumps({"url": "https://example.com/cache"})
+        )
+        code = json.loads(body)["code"]
+
+        for _ in range(3):
+            status, headers, _ = call(self.app, "GET", "/" + code)
+            self.assertEqual(status, 302)
+            self.assertEqual(headers["Location"], "https://example.com/cache")
+
+    def test_delete_link_then_redirect_returns_404(self):
+        _, _, body = call(
+            self.app, "POST", "/api/shorten", json.dumps({"url": "https://example.com/c"})
+        )
+        code = json.loads(body)["code"]
+
+        status, _, _ = call(self.app, "GET", "/" + code)
+        self.assertEqual(status, 302)  # populate the cache
+
+        status, _, _ = call(self.app, "DELETE", "/links/" + code)
+        self.assertEqual(status, 204)
+
+        status, _, _ = call(self.app, "GET", "/" + code)
+        self.assertEqual(status, 404)  # no stale cached redirect after delete
+
+    def test_delete_unknown_code_returns_404(self):
+        status, _, _ = call(self.app, "DELETE", "/links/doesnotexist")
+        self.assertEqual(status, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

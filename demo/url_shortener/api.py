@@ -14,6 +14,7 @@ from .service import AliasError, InvalidURLError, ShortenerService
 _REASON = {
     200: "OK",
     201: "Created",
+    204: "No Content",
     302: "Found",
     400: "Bad Request",
     404: "Not Found",
@@ -45,6 +46,8 @@ class WSGIApp:
                 return self._shorten(environ, start_response)
             if path.startswith("/api/stats/") and method == "GET":
                 return self._stats(start_response, path[len("/api/stats/") :])
+            if path.startswith("/links/") and method == "DELETE":
+                return self._delete_link(start_response, path[len("/links/") :])
             if method == "GET" and path != "/" and "/" not in path[1:]:
                 return self._redirect(environ, start_response, path[1:])
             return self._json(start_response, 404, {"error": "not found"})
@@ -83,6 +86,13 @@ class WSGIApp:
         if long_url is None:
             return self._json(start_response, 404, {"error": "unknown or expired code"})
         start_response("302 Found", [("Location", long_url), ("Content-Length", "0")])
+        return [b""]
+
+    def _delete_link(self, start_response, code):
+        deleted = self.service.delete_link(code)
+        if not deleted:
+            return self._json(start_response, 404, {"error": "unknown code"})
+        start_response("204 No Content", [("Content-Length", "0")])
         return [b""]
 
     def _stats(self, start_response, code):

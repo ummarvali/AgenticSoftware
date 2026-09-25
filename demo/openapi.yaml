@@ -36,6 +36,11 @@ paths:
   /{code}:
     get:
       summary: Redirect to the original URL
+      description: >
+        Resolves a short code to its target URL and issues a 302 redirect.
+        Lookups are served from a bounded in-memory LRU cache when possible
+        (falling back to the store on a cache miss) for lower latency; deleted
+        or expired links are never served from a stale cache entry.
       parameters:
         - in: path
           name: code
@@ -44,6 +49,20 @@ paths:
       responses:
         "302": { description: Redirect to the long URL }
         "404": { description: Unknown or expired code }
+  /links/{code}:
+    delete:
+      summary: Delete a short link
+      description: >
+        Deletes the link and synchronously invalidates any cached lookup entry
+        so subsequent redirects for this code stop resolving immediately.
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Link deleted }
+        "404": { description: Unknown code }
   /api/stats/{code}:
     get:
       summary: Click analytics for a code
