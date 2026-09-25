@@ -31,3 +31,7 @@ runs/
 .env.*
 *.key
 secrets.*
+# Local databases created by running the demo
+*.db
+*.db-wal
+*.db-shm
