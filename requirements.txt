@@ -1,13 +1,14 @@
 # The prototype's runtime deliberately depends on the Python standard library ONLY,
 # so it runs anywhere `python3` exists with zero network access or API keys.
 #
-# The two lines below are OPTIONAL extras, installed only if you want them:
-#   pytest  -> to execute the automated test suite (see `tests/`)
-#   openai  -> to swap the offline deterministic engine for a live LLM backend
+# The lines below are OPTIONAL extras, installed only if you want them:
+#   pytest             -> to execute the automated test suite (see `tests/`)
+#   anthropic / openai -> the live model (the primary mode; the offline engine is the fallback)
 #
 # Install the base prototype:      python -m pip install -e .
 # Install with the test runner:    python -m pip install -e ".[dev]"
-# Install with a live LLM backend: python -m pip install -e ".[llm]"
+# Install with a live LLM backend: python -m pip install -e ".[anthropic]"   (or ".[llm]" for OpenAI)
 pytest>=7.4        ; extra == "dev"
 openai>=1.0        ; extra == "llm"
+anthropic>=0.39    ; extra == "anthropic"
 anthropic>=0.39    ; extra == "anthropic"

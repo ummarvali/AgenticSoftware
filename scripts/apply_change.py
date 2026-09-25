@@ -1,4 +1,4 @@
-"""Apply an accepted agent run to the working tree (used by the pipeline's approval job).
+"""Apply an accepted agent run to the working tree (used by the pipeline's acceptance job).
 
 The agent never writes to the repository; this is the separate, human-approved step:
 

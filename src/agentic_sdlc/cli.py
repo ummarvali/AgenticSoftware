@@ -1,12 +1,15 @@
 """Command-line interface for the Agentic SDLC system.
 
+The team entry point is the GitHub pipeline (.github/workflows/agent.yml); this CLI is for
+local runs (and is what the pipeline itself calls).
+
 Usage examples:
 
     # The mandatory use case, non-interactive:
     python -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
 
     # Interactive, with human approval at each checkpoint:
-    python -m agentic_sdlc --interactive "Add rate limiting to the existing URL shortener API."
+    python -m agentic_sdlc --interactive --repo demo "Add rate limiting to the existing URL shortener API."
 
     # Demonstrate error handling & recovery by injecting a transient fault:
     python -m agentic_sdlc --inject-fault code:1 "Build a URL shortener."

@@ -1,7 +1,7 @@
 # The agent system itself (not the demo service — that image is demo/Dockerfile).
 #   docker build -t agentic-sdlc .
-#   docker run --rm -v "$PWD/runs:/app/runs" agentic-sdlc --file examples/greenfield.txt
-#   docker run --rm -e ANTHROPIC_API_KEY -v "$PWD/runs:/app/runs" agentic-sdlc --provider claude --file examples/greenfield.txt
+#   docker run --rm --user "$(id -u)" -v "$PWD/runs:/app/runs" agentic-sdlc --file examples/greenfield.txt
+#   docker run --rm --user "$(id -u)" -e ANTHROPIC_API_KEY -v "$PWD/runs:/app/runs" agentic-sdlc --provider claude --file examples/greenfield.txt
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

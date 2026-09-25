@@ -117,8 +117,8 @@ design ──┬─► code ──► tests ──┐
 Brownfield requirements inject an `impact` task that `code` depends on:
 
 ```
-design, impact ──► code ──► tests ──┐
-                    docs ───────────┴─► validate ──► summary
+design ──┬─► impact ──► code ──► tests ──┐
+         └─► docs ─────────────────────────┴─► validate ──► summary
 ```
 
 With `--repo`, the run is in **change mode**: the CodebaseAnalyst snapshots the repository
@@ -136,7 +136,7 @@ changed files plus `CHANGES.diff`, and the repository is never written.
 | **Validation feedback loop** | Repairable findings flow *back* into generation (bounded), so recovery is agent-driven self-correction, not linear retry. |
 | **Blackboard coordination** | Agents never call each other; all state flows through one inspectable object, making runs auditable and agents independently testable. |
 | **Provider seam** | A small typed interface (`ReasoningProvider`) lets the same agents run on a live LLM (primary) or offline (fallback) without changing orchestration. |
-| **LLM-first, never LLM-dependent** | The model drives every stage including code generation; each stage falls back to the deterministic engine on error, so a run always completes and CI can test the whole pipeline without a key. |
+| **LLM-first, never LLM-dependent** | The model drives every stage including code generation; each stage falls back to the deterministic engine on error, so a model failure never half-completes a run and CI can test the whole pipeline without a key. |
 | **Sandbox gate for model code** | Model-authored code is scanned, compiled and its own tests run before acceptance, with one repair pass fed by the real failure; then the verified template. |
 | **Scan before execute** | The AST safety scan runs before any generated code is executed, in both the codegen gate and the Validator. |
 | **Knowledge packs** | Domain expertise is isolated and pluggable; adding a domain is a new pack, not an orchestrator change. |
@@ -182,4 +182,4 @@ flowchart LR
 
 In the pipeline the orchestrator's three in-run gates are automatic (`AutoApprove`, which never
 accepts a failing report); the human decisions are the two environment approvals. Examples:
-[run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (greenfield), [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) (brownfield).
+[run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (greenfield), [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) → [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) (brownfield), [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7) (ambiguous).

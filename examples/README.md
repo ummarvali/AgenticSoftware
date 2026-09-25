@@ -3,7 +3,8 @@
 The primary way to run these is the **GitHub Actions pipeline**: open an issue from the
 [Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)
 and pick the matching test case (examples: [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) greenfield, [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) →
-[PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) brownfield). Four earlier CLI runs on the live model are described in
+[PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) and [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) brownfield, [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) →
+[PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7) ambiguous). Four earlier CLI runs on the live model are described in
 [§4](#4-live-model--examplesllm-run-recorded). The three requirement files below exercise
 the three input classes (greenfield, brownfield, ambiguous); the commands shown run them
 on the offline fallback so they work without a key (add `--provider claude` to run them live).
@@ -45,7 +46,7 @@ Validation : 5/5 checks passed (PASS)
 
 - **Classification:** `brownfield` (triggered by "existing")
 - **Task graph:** adds an `impact` task that `code` depends on —
-  `(design ∥ impact) → code → tests → …`
+  `design → (impact ∥ docs) → code → tests → …`
 - **Codebase impact:** snapshots `demo/` (read-only), ranks its files by relevance, and lists
   the candidate touch points (the *Codebase Impact* section in `ENGINEERING_SUMMARY.md`).
 - **The change set** (change mode — not a regenerated project): `url_shortener/ratelimit.py`
@@ -99,7 +100,7 @@ In each folder:
 - `artifacts/ENGINEERING_SUMMARY.md` → plan, rationale (design decisions + the agents'
   decision log), **design ↔ implementation coverage**, validation, risks derived from the
   produced slice, the model's trade-offs (prototype vs production), assumptions, limitations.
-- The model plans a **richer DAG** (roughly 15–30 tasks, 10+ levels) than the offline engine's 6.
+- The model plans a **richer DAG** (roughly 15–30 tasks, 10+ levels) than the offline engine's 6–7.
   The first `design`/`code`/`tests`/`docs` task does the work; later ones log a `reuse`
   decision (`reused=N` in the monitoring line), so every task completes without duplicate
   artifacts.

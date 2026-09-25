@@ -1,11 +1,11 @@
 # The agent as a team pipeline — the production operating model.
 #
-# Nobody runs the model from a laptop or holds the key. A request comes in (a maintainer's
+# In this operating model nobody runs the model from a laptop or holds the key. A request comes in (a maintainer's
 # "Run workflow", or an issue opened from the "Agent request" form), a maintainer approves
 # the run before the model is called, the agent runs in CI with the key from a GitHub
 # Environment secret, its result is published on the run page (and on the issue), and the
 # run then WAITS for a human to accept it (GitHub Environment "agent-acceptance"). Only an
-# accepted run becomes a pull request — so the proposal lands in normal code review and CI.
+# accepted run becomes a pull request — so the proposal lands in normal code review.
 #
 # Why two environments: they gate two different decisions. "agent-run" guards the key and
 # the spend (who may start a model run, from which branch); "agent-acceptance" is the
@@ -122,8 +122,8 @@ jobs:
       - name: Hand the model key to the agent as a file (never in its environment)
         id: key
         env:
-          # The secret exists only in this short step (and is empty unless the run is on
-          # main: the environment's branch rule). It is written to a private file that the
+          # The secret exists only in this short step (and a run from any branch other than
+          # main is refused by the environment's branch rule). It is written to a private file that the
           # agent reads and deletes at start-up, so the key is never in the agent's initial
           # environment, which is what /proc/<pid>/environ exposes to child processes such
           # as the model-written tests the agent executes during validation.
@@ -142,7 +142,7 @@ jobs:
           if [ -z "$value" ]; then echo "::error::secret $name is not set"; exit 1; fi
           printf '%s' "$value" > "$RUNNER_TEMP/model.key"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-      - name: Run the agent (non-interactive; human approval happens in the next job)
+      - name: Run the agent (non-interactive; human acceptance happens in the accept job)
         id: agent
         env:
           KEY_VAR: ${{ steps.key.outputs.name }}

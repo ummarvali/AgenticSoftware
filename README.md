@@ -14,8 +14,8 @@ approve.
 > to an existing repository (enhancements, bug fixes, refactors, test and documentation
 > improvements — proposed as a validated change set, never applied), and ambiguous
 > requirements. (Recorded brownfield evidence: rate-limiting enhancements, from the CLI and
-> through the pipeline in PR #3; bug fixes, refactors and test/doc changes take the same
-> change-mode path.)
+> through the pipeline in PRs #3 and #5, plus the ambiguous performance change in PR #7; bug
+> fixes, refactors and test/doc changes take the same change-mode path, not yet recorded.)
 
 - **Model-driven by design** — a live LLM (Claude / OpenAI / Azure / any OpenAI-compatible
   endpoint) analyses the requirement, plans the task graph, designs the architecture and
@@ -32,7 +32,7 @@ approve.
 ## ⚡ TL;DR — for the reviewer
 
 The agent runs as a **GitHub Actions pipeline**, the way a team would operate it: the model
-key lives in GitHub, humans approve at two gates, and the output arrives as a pull request.
+key lives in GitHub, humans approve at two approval gates (spend, acceptance), and the output arrives as a pull request.
 Three ways in:
 
 | | How | What you need |
@@ -56,7 +56,7 @@ Three ways in:
    agent's decision, one `[LLM]` line per model call (stage, tokens, latency, retries), the
    sandbox validation and the in-run gates. A run takes ~6–12 minutes after approval.
 4. The result is **posted on your issue**: each validation check, tokens and cost, and the full
-   engineering summary. The run page shows the same summary, and its **`agent-run` artifact**
+   engineering summary. The run page shows the same summary, and its run-record artifact (named **`agent-run`**)
    holds the generated code, tests, `openapi.yaml`, `README.md` and `result.json`.
 5. The maintainer reviews it and accepts or rejects (the `agent-acceptance` gate). Accepted →
    a **pull request** is opened and linked on your issue: a new project under
@@ -93,6 +93,7 @@ Pipeline runs on GitHub, plus four earlier live runs from the CLI, checked in ex
 | **The pipeline, end to end on GitHub**: the mandatory requirement run in Actions — spend approved, live console, 5/5 checks with 28 model-written tests, 88.5k tokens (~$0.67), accepted, pull request opened | [Actions run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (code under `generated/20260925-115009-176/`) |
 | **A brownfield change requested through the issue form** — "add rate limiting" to `demo/`: 6/6 checks, the change validated with `demo/`'s 20 existing tests plus 21 new ones, 49k tokens (~$0.37). Code review of the PR then found two security gaps the automated gates cannot see (an unauthenticated admin endpoint; a client-chosen `Authorization` value used as the quota key) — which is what the acceptance gate and PR review are for, and it led to a SECURITY rule in the code-generation prompts | [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [pull request #3](https://github.com/ummarvali/AgenticSoftware/pull/3) |
 | **The same request after that finding** — re-run once the SECURITY rule was in the prompts: 6/6 checks, 36 tests (20 existing + 16 new); limits are configuration only (no admin endpoint), and a client key counts only if it matches a server-side list, else the peer address is used. Verified by running it: the 4th request over a limit of 3 gets 429 with `Retry-After`, rotating fake keys stays at 429, `/admin/*` is 404. ~54k tokens (~$0.41) | [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [pull request #5](https://github.com/ummarvali/AgenticSoftware/pull/5) |
+| **An ambiguous requirement through the issue form** — "Make the app faster." against `demo/`: the analysis records its interpretation as explicit assumptions (backend/API and database are the targets; no profiling data exists yet; code-level changes only, no new infrastructure), and the change set is validated 6/6 with 35 tests. The model chose a broad reading — a profiling toolkit plus an opt-in batched-commit mode in the store, not a default speed-up — which is exactly what the acceptance review is there to judge (see §9) | [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [pull request #7](https://github.com/ummarvali/AgenticSoftware/pull/7) |
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
@@ -286,7 +287,7 @@ python3 -m agentic_sdlc --interactive --file examples/greenfield.txt   # human a
 **Windows PowerShell**:
 
 ```powershell
-# From the project root
+# From the folder you cloned into
 cd AgenticSoftware
 
 # Option A — run directly (no install), just put src on the path:
@@ -318,7 +319,7 @@ python -m pip install -e ".[dev]"; pytest        # or with pytest
 **Run on a real model (Claude):**
 
 The system was developed and exercised end to end against a real Anthropic key; the pipeline
-runs ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
+runs ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7)) and the four CLI runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
 this repository and none is needed to run, test or evaluate it** — without a key the same
 pipeline runs on the deterministic engine. To reproduce a live run yourself:
 
@@ -384,7 +385,7 @@ Override the root with `--output-root`. Nothing is written anywhere else.
 
 This is the same model as a CI job workspace or an artifact store: the outcome is a
 *reviewable proposal*, not a change already applied. `runs/` is git-ignored — the
-**committed evidence** is the pipeline pull requests ([#1](https://github.com/ummarvali/AgenticSoftware/pull/1), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3) — left unmerged on
+**recorded evidence** is the pipeline pull requests ([#1](https://github.com/ummarvali/AgenticSoftware/pull/1), [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), [#5](https://github.com/ummarvali/AgenticSoftware/pull/5), [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) — left unmerged on
 purpose), `demo/` (the deterministic output for the mandatory requirement)
 and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 `scripts/snapshot_run.py`, which scrubs anything key-shaped).
@@ -518,9 +519,18 @@ other approval system (Slack, Jira, a web UI).
 
 ## 5. Example scenarios
 
-See [`examples/README.md`](examples/README.md) for inputs, commands, and expected outputs for
-the **greenfield**, **brownfield**, and **ambiguous** cases, plus the error-recovery demos.
-Highlights:
+**Live, through the pipeline** (requirement in the issue, output in the pull request — each PR
+description is the full engineering summary: task plan, decisions, validation, risks):
+
+| Scenario | Issue → pull request | Outcome |
+| --- | --- | --- |
+| Greenfield — the mandatory URL shortener | [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [#1](https://github.com/ummarvali/AgenticSoftware/pull/1) | 5/5 checks, 28 tests, new project under `generated/` |
+| Brownfield — rate limiting on `demo/` | [#2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [#3](https://github.com/ummarvali/AgenticSoftware/pull/3), then [#4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [#5](https://github.com/ummarvali/AgenticSoftware/pull/5) | 6/6 checks; code review of #3 found two security gaps; #5, after the prompt fix, closes both |
+| Ambiguous — "Make the app faster." on `demo/` | [#6](https://github.com/ummarvali/AgenticSoftware/issues/6) → [#7](https://github.com/ummarvali/AgenticSoftware/pull/7) | 6/6 checks, 35 tests; interpretation recorded as assumptions; broader than a reviewer would want (§9) |
+
+**Offline, reproducible without a key:** see [`examples/README.md`](examples/README.md) for
+inputs, commands, and expected outputs for the **greenfield**, **brownfield**, and
+**ambiguous** cases, plus the error-recovery demos. Highlights:
 
 - **Greenfield** → full URL-shortener package, `5/5` checks pass.
 - **Brownfield** ("Add rate limiting to the existing URL shortener…", `--repo demo`) → an
@@ -570,7 +580,7 @@ AgenticSoftware/
 │  ├─ demo.py                          One-command narrated demo (all scenarios + monitoring)
 │  ├─ evaluate.py                      Evaluation scorecard: quality / adherence / efficiency; re-tests every recorded live run
 │  ├─ verify_change.py                 Re-verify a recorded brownfield change set against its repository
-│  ├─ apply_change.py                  Apply an accepted run to a branch (used by the pipeline's approval job)
+│  ├─ apply_change.py                  Apply an accepted run to a branch (used by the pipeline's acceptance job)
 │  ├─ pipeline_request.py              Validate a pipeline request (issue form / Run workflow); format the issue report
 │  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
 ├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
@@ -614,7 +624,7 @@ AgenticSoftware/
 │     ├─ filesystem.py                ArtifactStore — sandboxed writes (path-traversal guard)
 │     ├─ repo.py                      Brownfield: read-only repo snapshot, relevance ranking, overlay, unified diff
 │     ├─ code_runner.py               CodeRunner — in-memory compile + isolated (python -I) unittest subprocess, credential-scrubbed env
-│     ├─ static_check.py               AST safety scan: dangerous calls, non-stdlib imports, hard-coded secrets
+│     ├─ static_check.py              AST safety scan: dangerous calls, non-stdlib imports, hard-coded secrets
 │     └─ __init__.py                  ToolBox bundle handed to agents
 └─ tests/
    ├─ test_models.py                  DAG ordering / cycle & dangling-dep guards
@@ -643,7 +653,7 @@ Correctness and output quality are validated at **four** levels:
    real generated-test subprocess, **compile failures halting** even across retries, code with
    a high-severity scan finding **never being executed**, truncation not being retried, and
    plan invariants (validation must depend on the work it reports on).
-2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
+2. **Generated-code tests** (emitted into every run; for the offline template: unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
    (shorten → 302 redirect → stats).
 3. **In-pipeline validation** (`Validator`): the system compiles and executes the code it just
@@ -653,7 +663,7 @@ Correctness and output quality are validated at **four** levels:
 $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 75 tests ... OK
 ```
 
-4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
+4. **Continuous integration** (`.github/workflows/ci.yml`): every push to main and every pull request runs the framework
    and demo suites on Linux and Windows (Python 3.10 and 3.12), executes the mandatory
    use case and every recovery scenario end to end, and builds + smoke-tests the demo
    container (shorten → 302 → stats).
@@ -709,8 +719,8 @@ Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
 | **Hallucinated plan / design** | Plan: schema-checked JSON, task-category allow-list, required stages, validation made to depend on the work, acyclic check, else deterministic plan. Design: typed parsing. Analysis: every ambiguity becomes an *explicit default assumption* a human sees at the clarification gate, and the **same FRs/NFRs/assumptions are passed to the design and codegen stages** so later stages cannot silently re-open them | — |
 | **Design promises more than the code delivers** | The design prompt pins the **implementation target** (Python standard library, single process, in-memory/SQLite) so the model cannot decide on a stack the slice will not implement — production evolutions go to trade-offs, phrased as prototype-vs-production; the summary computes **design ↔ implementation coverage** (which designed endpoints the generated slice actually serves), the repaired API contract documents only implemented endpoints, standing **risks are derived from the produced slice** (its persistence, its auth) rather than copied from the design, a requirement naming a non-Python target gets an explicit limitation line, and every live summary states that individual design decisions are *not* verified against the code | The model's design decisions (e.g. "async queue", "required Idempotency-Key header") are not all implemented by its code; only endpoints, compilation, the scan and the model's own tests are verified. A Critic agent (semantic design↔code↔tests review) is the next step |
 | **Drift within a run** (scope creep, loops) | One output schema per agent; agents cannot add tasks; the DAG bounds the work; `reuse` decisions prevent repeated work; bounded repair iterations; call + cost circuit breaker | — |
-| **Drift over time** (model / prompt changes) | The deterministic suite is a fixed regression baseline; recorded live runs in `examples/llm-run*` are golden snapshots; `scripts/evaluate.py` scores every scenario and runs in CI on every push | Live runs are not re-executed in CI (cost, non-determinism) — they are scored from their recorded `result.json` |
-| **Overreach** (an agent doing more than allowed) | Least privilege by construction: an agent's only tools are a sandboxed file store and a subprocess runner — no shell, no network tool, no git, no deploy. Agents never call each other or the model's tools; the model returns data, Python decides. Spend and acceptance approvals (pipeline); three gates with `--interactive` (CLI) | The sandbox is process-level, not network-isolated (see above) |
+| **Drift over time** (model / prompt changes) | The deterministic suite is a fixed regression baseline; recorded live runs in `examples/llm-run*` are golden snapshots; `scripts/evaluate.py` scores every scenario and runs in CI on every push | Live runs are not re-executed in CI (cost, non-determinism) — they are scored from their recorded `result.json` and their code is re-tested |
+| **Overreach** (an agent doing more than allowed) | Least privilege by construction: an agent's only tools are a sandboxed file store and a subprocess runner — no shell, no network tool, no git, no deploy. Agents never call each other or the model's tools; the model returns data, Python decides. Spend and acceptance approvals (pipeline); three gates with `--interactive` (CLI) | The sandbox is process-level, not network-isolated (see Security below) |
 | **Fail-closed by default** | No key → deterministic; bad reply → per-stage fallback; compile failure → halt for a human; any failing check → `REVIEW NEEDED`, never `PASS`, and auto mode does not accept it; no console input → gate rejects; partial runs always persisted | — |
 
 **Memory.** Working memory is the `Blackboard` — one shared, lock-guarded object per run and
@@ -728,7 +738,7 @@ through the firm's gateway, with allow-listed servers.
 
 ### Evaluation
 
-`python scripts/evaluate.py` produces a scorecard (also `--json`), and CI runs it on every push:
+`python scripts/evaluate.py` produces a scorecard (also `--json`), and CI runs it on every push to main and every pull request:
 
 | Axis | What is scored |
 | --- | --- |
@@ -826,6 +836,12 @@ Not enforced in this prototype (documented, would be required for production):
   each stage is one model call (analysis, plan, design, code+tests), and most planned tasks
   are logged as `reuse` of that output (the CLI URL-shortener run: 23 of 29) — the plan shows
   what was covered and why, not 29 separate generations.
+- **Ambiguity in the pipeline is resolved by assumption, not by conversation.** Locally the
+  clarification gate (`--interactive`) lets a human confirm the assumptions before anything
+  is built; in the pipeline they are only seen afterwards, in the result. For "Make the app
+  faster." ([PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7)) that produced a broader change than a reviewer would likely
+  want. The next step is a clarification round on the issue: post the assumptions, wait for
+  the requester to confirm or correct them, then build.
 - **"Scalable" is designed, not load-tested.** The scaling path (sharded store, cache,
   async analytics, stateless replicas) is in each design and its trade-offs; the generated
   slice is a single process and no load test is run.
@@ -869,7 +885,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
-| Evidence of the model-driven path | pipeline runs → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
+| Evidence of the model-driven path | pipeline runs → [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3), [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5), [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7); `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Controlled autonomy in a team setting | `.github/workflows/agent.yml` — request via issue form, spend approval, agent run in CI, acceptance approval, PR on acceptance |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
