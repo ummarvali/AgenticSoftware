@@ -9,15 +9,30 @@ the pipeline still produces a defensible impact assessment.
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 from agentic_sdlc.agents.base import Agent, AgentDecision
 from agentic_sdlc.models import Task
 from agentic_sdlc.orchestrator.state import AgentContext
+from agentic_sdlc.tools import repo as repo_tool
 
-_STOPWORDS = {"that", "this", "with", "from", "into", "have", "should", "would", "existing",
-              "service", "system", "prevent", "make", "build", "the", "and", "for"}
+
+def ensure_repo_loaded(bb) -> bool:
+    """Brownfield with a real repository: snapshot it (read-only) onto the blackboard and
+    switch the run to change mode. Safe to call from any agent, in any order."""
+
+    path = bb.requirement.repo_path
+    if not (path and os.path.isdir(path)):
+        return False
+    with bb._lock:                      # agents in one DAG level may race to load it
+        if not bb.repo_files:
+            bb.repo_files = repo_tool.snapshot(path)
+            bb.change_mode = True
+            bb.log("impact", f"repository snapshot: {len(bb.repo_files)} files (read-only); "
+                             "this run proposes a change set against it")
+    return True
+
+
 _CHANGE_VERBS = ("add", "rate limit", "rate-limit", "refactor", "fix", "migrate",
                  "optimize", "cache", "auth", "secure")
 
@@ -44,16 +59,19 @@ class CodebaseAnalystAgent(Agent):
 
     def act(self, ctx: AgentContext, task: Task, decision: AgentDecision) -> None:
         bb = ctx.blackboard
-        assert bb.analysis is not None and bb.architecture is not None
+        assert bb.analysis is not None
         impact: list[str] = []
 
         if decision.action == "scan-repo":
-            impact += self._scan_repo(decision.params["repo"], bb.requirement.text)
+            ensure_repo_loaded(bb)
+            impact += [f"existing file (candidate touch point, term-overlap score {sc}): {p}"
+                       for sc, p in repo_tool.rank(bb.repo_files, bb.requirement.text)
+                       if p.endswith((".py", ".ts", ".js", ".go", ".java"))][:10]
 
         # Reason from the design regardless, so we always give a system-level view.
         low = bb.requirement.text.lower()
         verbs = [v for v in _CHANGE_VERBS if v in low] or ["change"]
-        for comp in bb.architecture.components:
+        for comp in (bb.architecture.components if bb.architecture else []):
             module = comp.split("—")[0].strip()
             impact.append(f"{module}: assess for '{', '.join(verbs)}' impact")
 
@@ -64,34 +82,3 @@ class CodebaseAnalystAgent(Agent):
         bb.impact = impact
         bb.log("impact", f"identified {len(impact)} impacted areas")
         ctx.emit(self.name, f"identified {len(impact)} impacted areas")
-
-    @staticmethod
-    def _scan_repo(repo: str, requirement: str = "", limit: int = 10) -> list[str]:
-        """Rank source files by how often the requirement's key terms appear in their
-        path and content; return the top ``limit`` as candidate touch points. A
-        heuristic (term overlap, not semantic search) — stated as such in the output."""
-
-        terms = {w for w in re.findall(r"[a-z][a-z0-9_]{3,}", requirement.lower())
-                 if w not in _STOPWORDS}
-        if "rate" in requirement.lower():
-            terms |= {"rate", "limit", "throttle", "429", "request", "route", "handler"}
-        skip = {".git", ".venv", "venv", "node_modules", "__pycache__", "runs", "dist", "build"}
-        scored: list[tuple[int, str]] = []
-        for root, dirs, files in os.walk(repo):
-            dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
-            for fname in files:
-                if not fname.endswith((".py", ".ts", ".js", ".go", ".java")):
-                    continue
-                path = os.path.join(root, fname)
-                rel = os.path.relpath(path, repo)
-                try:
-                    with open(path, encoding="utf-8", errors="ignore") as fh:
-                        text = (rel + "\n" + fh.read(65536)).lower()
-                except OSError:
-                    continue
-                score = sum(text.count(t) for t in terms)
-                if score:
-                    scored.append((score, rel))
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        return [f"existing file (candidate touch point, term-overlap score {sc}): {rel}"
-                for sc, rel in scored[:limit]]

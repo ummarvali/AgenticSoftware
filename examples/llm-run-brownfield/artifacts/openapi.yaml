@@ -1,0 +1,110 @@
+openapi: 3.0.3
+info:
+  title: URL Shortener API
+  version: 1.0.0
+  description: >
+    Shorten URLs, redirect, read click analytics, and manage rate limits.
+    Endpoints subject to rate limiting return X-RateLimit-* headers and,
+    when the budget is exceeded, HTTP 429 with a Retry-After header.
+servers:
+  - url: http://localhost:8000
+paths:
+  /api/shorten:
+    post:
+      summary: Create a short link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, example: "https://example.com/page" }
+                alias: { type: string, example: "promo" }
+                ttl_seconds: { type: integer, example: 3600 }
+      responses:
+        "201":
+          description: Short link created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  short_url: { type: string }
+                  long_url: { type: string }
+                  expires_at: { type: number, nullable: true }
+        "400": { description: Invalid URL or alias }
+        "429": { description: Rate limit exceeded }
+  /{code}:
+    get:
+      summary: Redirect to the original URL
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "302": { description: Redirect to the long URL }
+        "404": { description: Unknown or expired code }
+        "429": { description: Rate limit exceeded }
+  /api/stats/{code}:
+    get:
+      summary: Click analytics for a code
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Stats payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  long_url: { type: string }
+                  clicks: { type: integer }
+        "404": { description: Unknown code }
+        "429": { description: Rate limit exceeded }
+  /admin/metrics:
+    get:
+      summary: Rate-limit rule config and allow/deny counters
+      responses:
+        "200": { description: Metrics snapshot }
+        "429": { description: Rate limit exceeded }
+  /admin/config/rate-limits/{ruleName}:
+    put:
+      summary: Hot-reload a rate-limit rule's threshold/window
+      parameters:
+        - in: path
+          name: ruleName
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [limit, window_seconds]
+              properties:
+                limit: { type: integer, example: 10 }
+                window_seconds: { type: number, example: 60 }
+      responses:
+        "200": { description: Rule updated }
+        "400": { description: Invalid rule payload }
+        "429": { description: Rate limit exceeded }
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        "200": { description: Service is up }
+  /health:
+    get:
+      summary: Liveness probe (alias)
+      responses:
+        "200": { description: Service is up }

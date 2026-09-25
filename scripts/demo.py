@@ -70,9 +70,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2) Brownfield — codebase reasoning + an injected impact task before code.
     run("2/4 BROWNFIELD — enhancement to existing code",
-        "Adds a codebase-impact step; --repo scans this repo for touch points",
+        "Impact analysis on demo/, then a change set (not a regeneration) validated against demo's own tests",
         Requirement("Add rate limiting to the existing URL shortener API to prevent abuse.",
-                    repo_path=str(ROOT)),
+                    repo_path=str(ROOT / "demo")),
         provider=p)
 
     # 3) Ambiguous — clarification + the validation feedback loop self-heals 4/5 -> 5/5.

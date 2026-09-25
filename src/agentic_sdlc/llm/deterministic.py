@@ -190,7 +190,8 @@ class DeterministicProvider(ReasoningProvider):
             tasks.append(
                 Task("impact", "Analyze codebase impact",
                      "Identify impacted services, modules, APIs, and data flows.",
-                     depends_on=[], category="codebase_impact", priority=10)
+                     # reasons from the architecture, so it runs after design
+                     depends_on=["design"], category="codebase_impact", priority=10)
             )
             code_deps.append("impact")
 
@@ -228,6 +229,9 @@ class DeterministicProvider(ReasoningProvider):
 
     def generate_docs(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
         return self._pack_for(analysis).docs(analysis, architecture)
+
+    def generate_change(self, analysis, architecture, requirement, repo_files, repo_root):
+        return self._pack_for(analysis).change(analysis, repo_files)
 
     def _pack_for(self, analysis: AnalysisResult) -> KnowledgePack:
         for pack_cls in _PACKS:

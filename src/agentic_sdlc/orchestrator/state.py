@@ -36,6 +36,11 @@ class Blackboard:
     architecture: Optional[Architecture] = None
     task_graph: Optional[TaskGraph] = None   # the human-approved plan
     impact: list[str] = field(default_factory=list)
+    # Brownfield with --repo: a read-only snapshot of the repository (path -> text) and
+    # the fact that this run proposes a *change set* against it, not a new project.
+    repo_files: dict[str, str] = field(default_factory=dict)
+    change_mode: bool = False
+    change_summary: str = ""
     code: list[Artifact] = field(default_factory=list)
     tests: list[Artifact] = field(default_factory=list)
     docs: list[Artifact] = field(default_factory=list)
@@ -81,6 +86,8 @@ class Blackboard:
 
         api = list(self.architecture.api) if self.architecture else []
         blob = "\n".join(a.content for a in self.code if a.path.endswith(".py"))
+        if self.change_mode:   # a change is served together with the code it changes
+            blob += "\n" + "\n".join(t for p, t in self.repo_files.items() if p.endswith(".py"))
         implemented, design_only = [], []
         for e in api:
             prefix = e.path.split("{")[0].rstrip("/") or "/"

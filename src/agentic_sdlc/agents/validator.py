@@ -8,13 +8,15 @@ uses to decide whether to accept the run.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from agentic_sdlc.agents.base import Agent, AgentDecision
 from agentic_sdlc.models import Check, Task, ValidationReport
 from agentic_sdlc.orchestrator.state import AgentContext
-from agentic_sdlc.tools.static_check import scan_tree
+from agentic_sdlc.tools import repo as repo_tool
+from agentic_sdlc.tools.static_check import Finding, scan_file, scan_tree
 
 #: Checks the RepairAgent knows how to fix automatically. Anything else that fails
 #: (e.g. a compile error or a failing test) requires human attention.
@@ -41,12 +43,28 @@ class ValidatorAgent(Agent):
         return AgentDecision("validate", "compile code, run tests, check contract & docs")
 
     def act(self, ctx: AgentContext, task: Task, decision: AgentDecision) -> None:
+        if ctx.blackboard.change_mode:
+            with tempfile.TemporaryDirectory() as tmp:
+                self._validate(ctx, Path(tmp) / "overlay")
+            return
+        self._validate(ctx, None)
+
+    def _validate(self, ctx: AgentContext, overlay: Path | None) -> None:
+        """Greenfield: validate the generated project in the output folder. Change mode:
+        lay the change set over a throwaway copy of the repository and validate that —
+        the repository's own tests must still pass with the change applied."""
+
         bb = ctx.blackboard
         out = Path(ctx.output_dir)
         checks: list[Check] = []
+        changed = [a for a in bb.all_artifacts()
+                   if a.kind != "change" and a.path != "ENGINEERING_SUMMARY.md"]
+        if overlay is not None:
+            repo_tool.materialize_overlay(bb.requirement.repo_path, changed, overlay)
+            out = overlay
 
-        # 1) Static: every generated .py file must compile.
-        py_files = [out / a.path for a in bb.all_artifacts() if a.path.endswith(".py")]
+        # 1) Static: every generated (or changed) .py file must compile.
+        py_files = [out / a.path for a in changed if a.path.endswith(".py")]
         compile_results = ctx.tools.runner.compile_python(py_files)
         failed = [c for c in compile_results if not c.ok]
         checks.append(Check(
@@ -58,7 +76,7 @@ class ValidatorAgent(Agent):
 
         # 2) Static safety scan BEFORE anything is executed: dangerous calls, imports
         #    outside the standard library, hard-coded secrets, stdlib-shadowing files.
-        findings = scan_tree(out)
+        findings = scan_tree(out) if overlay is None else self._scan_changes(out, changed)
         high = [f for f in findings if f.severity == "high"]
 
         # 3) Dynamic: the generated test suite must pass. Code with high-severity
@@ -85,9 +103,19 @@ class ValidatorAgent(Agent):
         ))
 
         # 5) Documentation present.
-        docs_exist = any(a.kind == "docs" for a in bb.docs)
+        docs_exist = any(a.kind == "docs" for a in bb.docs) or (
+            overlay is not None and (out / "README.md").exists())
         checks.append(Check("documentation present", docs_exist,
                             "docs generated" if docs_exist else "no docs generated"))
+
+        # 6) Change mode only: a change set was actually proposed.
+        if overlay is not None:
+            checks.append(Check(
+                "change set present", bool(changed),
+                f"{len(changed)} file(s) changed; repository tests re-run with the change applied"
+                if changed else
+                "no change authored — the offline engine only authors changes it knows "
+                "exactly (rate limiting on its own layout); run with --provider claude"))
 
         checks.append(Check(
             "static safety scan",
@@ -113,6 +141,22 @@ class ValidatorAgent(Agent):
             raise RuntimeError(f"generated code failed to compile: {failed[0].error}")
 
     @staticmethod
+    def _scan_changes(root: Path, changed) -> list:
+        """Scan only what the change touches: the repository itself is not under review,
+        but a changed file must not add dangerous calls, and a new top-level module must
+        not shadow the standard library."""
+
+        local = {p.name.removesuffix(".py") for p in root.iterdir()}
+        out = []
+        for a in changed:
+            if a.path.endswith(".py"):
+                out += [Finding(a.path, f.line, f.severity, f.rule, f.detail)
+                        for f in scan_file(root / a.path, local_packages=local)]
+        changed_paths = {a.path for a in changed}
+        out += [f for f in scan_tree(root) if f.rule == "stdlib-shadowing" and f.path.replace("\\", "/") in changed_paths]
+        return out
+
+    @staticmethod
     def _test_detail(output: str) -> str:
         """The unittest verdict ("Ran N tests ... OK"), with interpreter warnings
         emitted by the generated suite counted rather than pasted; on failure the
@@ -136,6 +180,8 @@ class ValidatorAgent(Agent):
         produced (not a copy of the design trade-offs, which the summary lists
         separately)."""
         code = "\n".join(a.content.lower() for a in bb.all_artifacts() if a.kind in ("code", "config"))
+        if bb.change_mode:
+            code += "\n" + "\n".join(t.lower() for p, t in bb.repo_files.items() if p.endswith(".py"))
         durable = "sqlite" in code
         in_memory = any(m in code for m in ("inmemory", "in_memory", "in-memory", ":memory:"))
         has_auth = any(m in code for m in ("api_key", "apikey", "x-api-key", "authorization", "bearer"))

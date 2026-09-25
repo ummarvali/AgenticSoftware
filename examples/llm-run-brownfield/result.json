@@ -1,0 +1,1273 @@
+{
+  "run_id": "20260925-085258-734",
+  "requirement": {
+    "text": "Add rate limiting to the existing URL shortener API to prevent abuse.",
+    "repo_path": "demo",
+    "context": {}
+  },
+  "analysis": {
+    "kind": "brownfield",
+    "intent": "Add rate limiting to an existing URL shortener API to prevent abuse (e.g., excessive shortening requests or redirect lookups from a single client).",
+    "normalized_problem": "The existing URL shortener API lacks abuse protection. Implement a rate limiting mechanism that restricts the number of requests a client (identified by IP, API key, or user account) can make within a given time window, applied to relevant endpoints (e.g., URL creation, redirection, and possibly analytics), returning appropriate HTTP responses when limits are exceeded, while integrating cleanly with the current codebase and infrastructure.",
+    "functional_requirements": [
+      "Identify and enforce rate limits on key API endpoints (e.g., POST /shorten, GET /:shortCode redirect, any admin/analytics endpoints)",
+      "Support client identification for rate limiting purposes (IP address, API key, authenticated user ID, or combination)",
+      "Return HTTP 429 Too Many Requests with a clear error message when limit is exceeded",
+      "Include standard rate limit headers in responses (e.g., X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset or Retry-After)",
+      "Allow configurable rate limit thresholds and time windows (e.g., N requests per minute/hour) via config/env variables",
+      "Support different rate limit tiers if applicable (e.g., anonymous vs authenticated users, free vs premium)",
+      "Ensure rate limiting logic integrates with existing middleware/routing structure without breaking current functionality",
+      "Log or expose metrics on rate-limited requests for monitoring/abuse detection",
+      "Gracefully handle edge cases such as distributed/multiple server instances (if applicable) to maintain consistent rate limiting"
+    ],
+    "non_functional_requirements": [
+      "Low latency overhead added by rate limiting checks (should not significantly degrade API response time)",
+      "Scalable solution that works correctly if the API is horizontally scaled across multiple instances (requires shared state, e.g., Redis, unless single-instance is confirmed)",
+      "Thread-safe / concurrency-safe implementation to avoid race conditions in counting requests",
+      "Configurable and maintainable rate limit rules without requiring code redeploy ideally (or clearly documented if redeploy is needed)",
+      "Backward compatible with existing API clients (no breaking changes to existing endpoints' contracts aside from added headers/429 responses)",
+      "Testable: unit and integration tests covering rate limit enforcement, reset behavior, and edge cases",
+      "Secure against trivial bypass (e.g., IP spoofing considerations, proper handling of X-Forwarded-For if behind a proxy/load balancer)"
+    ],
+    "ambiguities": [
+      {
+        "question": "What technology stack and framework is the existing URL shortener built with (e.g., Node/Express, Python/Flask/FastAPI, Java/Spring)?",
+        "why_it_matters": "Determines which rate limiting library/middleware to use and how to integrate it idiomatically into the existing codebase.",
+        "default_assumption": "Inspect the 'demo' repository to detect the stack automatically; assume Node.js/Express if unable to determine otherwise, and adapt implementation accordingly."
+      },
+      {
+        "question": "Is the API deployed as a single instance or horizontally scaled across multiple servers/containers?",
+        "why_it_matters": "In-memory rate limiting works only for single-instance deployments; multi-instance deployments require a shared store like Redis for consistent limits.",
+        "default_assumption": "Assume single-instance deployment for simplicity; use an in-memory store, but structure the code to allow swapping in Redis later if needed."
+      },
+      {
+        "question": "Should rate limits differ by client type (anonymous IP-based vs authenticated API key/user), and are there existing authentication mechanisms to leverage?",
+        "why_it_matters": "Affects how clients are identified and whether tiered limits are needed, impacting implementation complexity.",
+        "default_assumption": "Apply a single rate limit tier based on client IP address if no authentication system is detected in the repository."
+      },
+      {
+        "question": "What specific endpoints need rate limiting - only URL creation, or also redirects/lookups and any other endpoints?",
+        "why_it_matters": "Redirect endpoints are typically high-traffic and may need different (often higher) limits than creation endpoints to avoid impacting legitimate usage.",
+        "default_assumption": "Apply rate limiting to the URL creation endpoint(s) primarily, and apply a more lenient limit to redirect/lookup endpoints to prevent abuse without harming normal usage."
+      },
+      {
+        "question": "What are the desired rate limit thresholds (requests per time window)?",
+        "why_it_matters": "Directly affects user experience and abuse prevention effectiveness; too strict frustrates legitimate users, too lenient fails to prevent abuse.",
+        "default_assumption": "Use a reasonable default such as 10 requests per minute for URL creation and 100 requests per minute for redirects, configurable via environment variables."
+      },
+      {
+        "question": "Is there an existing reverse proxy or load balancer in front of the API that sets headers like X-Forwarded-For?",
+        "why_it_matters": "Determines how to correctly and securely extract the real client IP address for rate limiting purposes.",
+        "default_assumption": "Assume no proxy is present initially; use the direct connection IP, but add support for trusting X-Forwarded-For if a proxy config is detected in the repo."
+      }
+    ],
+    "domain": "url_shortener",
+    "confidence": 0.75
+  },
+  "task_graph": {
+    "tasks": [
+      {
+        "id": "design-1",
+        "title": "Design rate limiting architecture",
+        "description": "Define rate limiting strategy (token bucket/sliding window), client identification methods (IP, API key, user account), per-endpoint policies (creation, redirection, analytics), storage backend choice (Redis/in-memory), and HTTP response contract (429 with Retry-After headers).",
+        "depends_on": [],
+        "category": "design",
+        "priority": 1
+      },
+      {
+        "id": "codebase-impact-1",
+        "title": "Assess existing codebase integration points",
+        "description": "Review current URL shortener API routing, middleware stack, auth/session handling, and infra (Redis availability, deployment config) to identify where rate limiting middleware should be inserted and what conflicts or refactors are needed.",
+        "depends_on": [
+          "design-1"
+        ],
+        "category": "codebase_impact",
+        "priority": 1
+      },
+      {
+        "id": "code-config-1",
+        "title": "Implement rate limit configuration module",
+        "description": "Create configurable settings for time windows, request thresholds per endpoint category, and per-client-type limits (IP vs API key vs authenticated user), loaded from environment/config files.",
+        "depends_on": [
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 2
+      },
+      {
+        "id": "code-storage-1",
+        "title": "Implement rate limit storage backend",
+        "description": "Build a storage adapter (Redis-based) that tracks request counts/timestamps per client key with atomic increment and TTL expiry to support the chosen algorithm.",
+        "depends_on": [
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 2
+      },
+      {
+        "id": "code-identify-1",
+        "title": "Implement client identification logic",
+        "description": "Add logic to resolve a rate-limit key from incoming requests: prefer authenticated user ID, then API key, then fallback to client IP, handling proxies/X-Forwarded-For correctly.",
+        "depends_on": [
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 2
+      },
+      {
+        "id": "code-core-1",
+        "title": "Implement core rate limiting algorithm",
+        "description": "Implement the chosen algorithm (e.g., sliding window or token bucket) using the storage backend to evaluate whether a request should be allowed or throttled.",
+        "depends_on": [
+          "code-storage-1",
+          "code-config-1",
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 2
+      },
+      {
+        "id": "code-middleware-1",
+        "title": "Implement rate limiting middleware/interceptor",
+        "description": "Create middleware that uses client identification and core algorithm to check limits before request processing, attaching rate limit headers (X-RateLimit-Limit, Remaining, Reset).",
+        "depends_on": [
+          "code-core-1",
+          "code-identify-1",
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 3
+      },
+      {
+        "id": "code-response-1",
+        "title": "Implement 429 Too Many Requests response handling",
+        "description": "Add standardized error response with 429 status, Retry-After header, and JSON error body when rate limit is exceeded, integrated into existing error handling pipeline.",
+        "depends_on": [
+          "code-middleware-1",
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 3
+      },
+      {
+        "id": "code-apply-1",
+        "title": "Apply rate limiting to target endpoints",
+        "description": "Wire the middleware into URL creation, redirection, and analytics endpoints with appropriate per-endpoint thresholds defined in config.",
+        "depends_on": [
+          "code-middleware-1",
+          "code-response-1",
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 3
+      },
+      {
+        "id": "code-bypass-1",
+        "title": "Implement admin/whitelist bypass mechanism",
+        "description": "Allow trusted internal services or admin API keys to bypass or have elevated rate limits, configurable via allowlist.",
+        "depends_on": [
+          "code-apply-1",
+          "codebase-impact-1"
+        ],
+        "category": "code",
+        "priority": 4
+      },
+      {
+        "id": "tests-unit-1",
+        "title": "Write unit tests for rate limiting core logic",
+        "description": "Test algorithm correctness, edge cases at window boundaries, concurrent request handling, and storage backend interactions.",
+        "depends_on": [
+          "code-core-1",
+          "code-identify-1",
+          "codebase-impact-1"
+        ],
+        "category": "tests",
+        "priority": 4
+      },
+      {
+        "id": "tests-integration-1",
+        "title": "Write integration tests for endpoint rate limiting",
+        "description": "Test that URL creation, redirection, and analytics endpoints correctly enforce limits, return 429 with proper headers, and reset after window expiry.",
+        "depends_on": [
+          "code-apply-1",
+          "code-bypass-1",
+          "codebase-impact-1"
+        ],
+        "category": "tests",
+        "priority": 5
+      },
+      {
+        "id": "tests-load-1",
+        "title": "Perform load/concurrency testing",
+        "description": "Simulate high-concurrency traffic to validate rate limiter accuracy and performance under load, checking for race conditions in the storage backend.",
+        "depends_on": [
+          "tests-integration-1",
+          "codebase-impact-1"
+        ],
+        "category": "tests",
+        "priority": 5
+      },
+      {
+        "id": "docs-api-1",
+        "title": "Document rate limiting behavior in API docs",
+        "description": "Update API documentation to describe rate limit headers, error responses, per-endpoint limits, and guidance for clients on handling 429 responses.",
+        "depends_on": [
+          "code-apply-1",
+          "codebase-impact-1"
+        ],
+        "category": "docs",
+        "priority": 5
+      },
+      {
+        "id": "docs-ops-1",
+        "title": "Document operational configuration and runbook",
+        "description": "Document how to configure rate limits, monitor Redis usage, adjust thresholds, and troubleshoot rate limiting issues in production.",
+        "depends_on": [
+          "code-config-1",
+          "code-storage-1",
+          "codebase-impact-1"
+        ],
+        "category": "docs",
+        "priority": 5
+      },
+      {
+        "id": "validate-1",
+        "title": "Validate rate limiting against requirements",
+        "description": "Run full test suite, verify all endpoints enforce correct limits per client type, confirm proper HTTP responses, and ensure no regressions in existing functionality.",
+        "depends_on": [
+          "tests-unit-1",
+          "tests-integration-1",
+          "tests-load-1",
+          "docs-api-1",
+          "docs-ops-1",
+          "design-1",
+          "codebase-impact-1",
+          "code-config-1",
+          "code-storage-1",
+          "code-identify-1",
+          "code-core-1",
+          "code-middleware-1",
+          "code-response-1",
+          "code-apply-1",
+          "code-bypass-1"
+        ],
+        "category": "validate",
+        "priority": 6
+      },
+      {
+        "id": "summary-1",
+        "title": "Summarize implementation and rollout plan",
+        "description": "Produce a summary of the rate limiting feature, changes made, test results, and recommended rollout/monitoring plan for production deployment.",
+        "depends_on": [
+          "validate-1"
+        ],
+        "category": "summary",
+        "priority": 7
+      }
+    ]
+  },
+  "architecture": {
+    "overview": "A rate limiting layer is added to the existing single-instance Python URL shortener service (stdlib http.server/WSGI based). Each incoming request passes through a RateLimiter middleware that classifies the client (by IP, honoring X-Forwarded-For only if a trusted-proxy list is configured), looks up the endpoint's rate rule (tighter for POST /shorten, looser for GET /:shortCode, admin/analytics rules separately configurable), and applies a thread-safe, in-memory sliding-window counter keyed by (client_id, rule_name, window_bucket). Requests over the limit get HTTP 429 with Retry-After and a JSON error body; all responses carry X-RateLimit-* headers. The limiter is implemented behind a small storage interface (RateLimiterStore) so the in-memory dict backing it can later be swapped for a shared store without changing call sites. Config (limits, windows, trusted proxies) is loaded from environment variables at startup and can be hot-reloaded from a local JSON/SQLite config table without redeploy. All rate-limit decisions (allow/deny) are logged and counted in an in-memory metrics registry exposed via an admin endpoint for monitoring/abuse detection.",
+    "components": [
+      "HTTP layer: Python stdlib http.server (or existing WSGI app) exposing /shorten, /:shortCode, /admin/metrics, /admin/config",
+      "RateLimitMiddleware: wraps each request handler, resolves client identity and applicable rule, calls RateLimiterStore, sets response headers, short-circuits with 429 when exceeded",
+      "ClientIdentifier: derives a stable client key from remote socket IP or trusted X-Forwarded-For header (only trusted if proxy IP is in TRUSTED_PROXIES config)",
+      "RateLimiterStore (interface) + InMemoryRateLimiterStore (impl): thread-safe sliding-window counters using dict + threading.Lock, keyed by client_id+rule+window",
+      "RuleRegistry: holds per-endpoint RateLimitRule objects (limit, window_seconds, name) loaded from env vars / config table, reloadable without process restart",
+      "MetricsCollector: in-memory counters (allowed_count, blocked_count) per rule/client bucket, plus a rolling log of recent 429 events for abuse detection; exposed at GET /admin/metrics",
+      "URLShortenerService: existing core logic (create short URL, resolve redirect) \u2014 untouched aside from being invoked after middleware passes",
+      "ConfigLoader: reads env vars at startup (and optionally a config.json / SQLite `config` table) into RuleRegistry; supports periodic re-read for hot config updates",
+      "Persistence: SQLite file (urls.db) for short URL mappings (existing), plus optional SQLite table `rate_limit_config` for dynamic rule overrides; rate counters themselves stay in-memory per assumption of single instance"
+    ],
+    "data_model": [
+      "ShortURL(short_code TEXT PRIMARY KEY, target_url TEXT, created_at TIMESTAMP, creator_ip TEXT)",
+      "RateLimitRule(name TEXT PRIMARY KEY, endpoint_pattern TEXT, limit INTEGER, window_seconds INTEGER, tier TEXT DEFAULT 'anonymous')",
+      "RateLimitCounter (in-memory only): key=(client_id, rule_name, window_start_epoch) -> count INTEGER, expires_at",
+      "MetricEvent (in-memory ring buffer): {timestamp, client_id, rule_name, endpoint, outcome: allowed|blocked}",
+      "AdminConfigOverride (optional SQLite table): rule_name TEXT PRIMARY KEY, limit INTEGER, window_seconds INTEGER, updated_at TIMESTAMP"
+    ],
+    "api": [
+      {
+        "method": "POST",
+        "path": "/shorten",
+        "summary": "Create a short URL; subject to strict rate limit (default 10 req/min per client IP)",
+        "request": "{\"url\": \"https://example.com/long/path\"}",
+        "response": "{\"short_code\": \"abc123\", \"short_url\": \"http://host/abc123\"}",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/{shortCode}",
+        "summary": "Redirect to original URL; subject to lenient rate limit (default 100 req/min per client IP)",
+        "request": "none",
+        "response": "302 redirect to target_url; on limit exceeded, JSON error body per 429 schema",
+        "status": 302
+      },
+      {
+        "method": "GET",
+        "path": "/admin/metrics",
+        "summary": "Expose current rate-limit metrics (allowed/blocked counts per rule, recent 429 events) for monitoring",
+        "request": "none (optionally protected by admin API key header)",
+        "response": "{\"rules\": {\"shorten\": {\"allowed\": 1200, \"blocked\": 34}, \"redirect\": {\"allowed\": 5400, \"blocked\": 2}}, \"recent_blocks\": [{\"client_id\": \"1.2.3.4\", \"rule\": \"shorten\", \"timestamp\": \"...\"}]}",
+        "status": 200
+      },
+      {
+        "method": "PUT",
+        "path": "/admin/config/rate-limits/{ruleName}",
+        "summary": "Update a rate limit rule's threshold/window at runtime without redeploy (writes to SQLite override table, RuleRegistry hot-reloads)",
+        "request": "{\"limit\": 20, \"window_seconds\": 60}",
+        "response": "{\"rule\": \"shorten\", \"limit\": 20, \"window_seconds\": 60, \"updated_at\": \"...\"}",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/health",
+        "summary": "Basic liveness check, exempt from rate limiting",
+        "request": "none",
+        "response": "{\"status\": \"ok\"}",
+        "status": 200
+      }
+    ],
+    "decisions": [
+      "Target stack for this slice: pure Python 3 standard library only (http.server or wsgiref), no external frameworks or packages, matching the constraint that the implementation target must run as a single process with in-memory/SQLite persistence",
+      "Rate limiting algorithm: sliding-window counter (fixed window with rollover check) implemented via a dict of counters guarded by a single threading.Lock for correctness under Python's GIL-bound concurrency; chosen over token bucket for simplicity of headers (X-RateLimit-Remaining/Reset map cleanly to window boundaries)",
+      "Client identification: default to the raw socket peer IP; only trust X-Forwarded-For header if the connecting peer IP is explicitly listed in a TRUSTED_PROXIES env var, to avoid trivial spoofing when no proxy is confirmed present",
+      "No authentication system detected, so a single anonymous tier keyed purely by client IP is applied; the RuleRegistry and RateLimitRule schema include a 'tier' field so an API-key/user tier can be added later without redesign",
+      "Rules and thresholds are read from environment variables (RATE_LIMIT_SHORTEN_LIMIT, RATE_LIMIT_SHORTEN_WINDOW, RATE_LIMIT_REDIRECT_LIMIT, RATE_LIMIT_REDIRECT_WINDOW) at startup, with an optional SQLite `rate_limit_config` table for runtime overrides via the /admin/config endpoint, satisfying 'configurable without redeploy'",
+      "RateLimiterStore is defined as an abstract interface (get_and_increment(key, limit, window) -> (allowed, remaining, reset_at)) with InMemoryRateLimiterStore as the only implementation in this slice, isolating the swap point for a future shared store",
+      "429 responses always include Retry-After (seconds) and X-RateLimit-Limit/Remaining/Reset headers; all other responses also include X-RateLimit-Limit/Remaining/Reset for transparency",
+      "Metrics are kept in-memory (counters + a bounded deque of recent block events) and exposed via /admin/metrics rather than pushed to an external monitoring system, consistent with single-process/stdlib-only constraint",
+      "Short URL persistence uses SQLite (stdlib sqlite3) as already assumed for the core shortener; rate limit counters are NOT persisted to SQLite since they are ephemeral and per-process, avoiding write amplification",
+      "Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default)."
+    ],
+    "tradeoffs": [
+      "Prototype stores rate-limit counters in a process-local dict protected by a lock, correct only for a single instance; production running multiple instances behind a load balancer would need a shared, atomic counter store (e.g., Redis with INCR+EXPIRE or a Lua script) to keep limits consistent across nodes",
+      "Prototype trusts X-Forwarded-For only via a static TRUSTED_PROXIES allowlist read at startup; production would integrate with the actual reverse proxy/load balancer configuration and possibly mTLS or signed headers to harden against spoofing",
+      "Prototype uses fixed/sliding window counters for simplicity and predictable headers; production might adopt a token-bucket or leaky-bucket algorithm for smoother burst handling at the cost of slightly more complex state",
+      "Prototype exposes metrics via a simple JSON admin endpoint read from in-memory counters; production would export metrics to a time-series system (e.g., Prometheus) for alerting and long-term abuse trend analysis",
+      "Prototype allows runtime rule updates via SQLite-backed overrides polled/reloaded in-process; production would use a centralized config service or feature-flag system to push updates instantly to all instances",
+      "Prototype keeps a bounded in-memory log of recent 429 events for quick inspection; production would ship structured logs to a centralized logging/SIEM pipeline for durable abuse detection and forensics"
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "url_shortener/ratelimit.py",
+      "content": "\"\"\"Rate limiting layer for the URL shortener API.\n\nDesign goals (see docs/ARCHITECTURE.md for the wider picture):\n\n* A small storage interface (:class:`RateLimiterStore`) decouples the counting\n  algorithm from where counts live, so the default in-memory dict-backed store\n  can later be swapped for a shared store (e.g. Redis) without touching call\n  sites in ``api.py``.\n* :class:`RateLimiter` classifies a client (by IP, optionally honouring\n  ``X-Forwarded-For`` when the peer is a configured trusted proxy), looks up a\n  named rule (limit + window), and applies a thread-safe sliding-window\n  counter keyed by ``(rule_name, client_id)``.\n* Rules can be hot-reloaded at runtime via :meth:`RateLimiter.set_rule` (used\n  by the ``PUT /admin/config/rate-limits/{ruleName}`` endpoint) without a\n  process restart.\n* Every allow/deny decision is counted in :class:`RateLimitMetrics` and logged,\n  so abuse can be monitored via ``GET /admin/metrics``.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport logging\nimport threading\nimport time\nfrom collections import deque\nfrom dataclasses import dataclass\nfrom typing import Optional, Protocol\n\nlogger = logging.getLogger(__name__)\n\n\n@dataclass(frozen=True)\nclass RateLimitRule:\n    \"\"\"A named limit: at most ``limit`` requests per ``window_seconds``.\"\"\"\n\n    limit: int\n    window_seconds: float\n\n\n@dataclass\nclass RateLimitResult:\n    \"\"\"Outcome of a single rate-limit check, ready to become HTTP headers.\"\"\"\n\n    allowed: bool\n    limit: Optional[int]\n    remaining: Optional[int]\n    reset_at: Optional[float]\n\n    def headers(self) -> list:\n        \"\"\"Standard ``X-RateLimit-*`` headers; empty if no rule applied.\"\"\"\n\n        if self.limit is None:\n            return []\n        now = time.time()\n        reset_in = max(0, int(round((self.reset_at or now) - now)))\n        return [\n            (\"X-RateLimit-Limit\", str(self.limit)),\n            (\"X-RateLimit-Remaining\", str(max(0, self.remaining or 0))),\n            (\"X-RateLimit-Reset\", str(reset_in)),\n        ]\n\n\nclass RateLimiterStore(Protocol):\n    \"\"\"Storage contract for sliding-window counters.\n\n    Implementations must be safe to call concurrently from multiple threads\n    (the standard-library WSGI server serves each request on its own thread\n    when used with a threading mixin, and tests exercise this directly).\n    \"\"\"\n\n    def hit(\n        self, key: str, limit: int, window_seconds: float, now: Optional[float] = None\n    ):\n        \"\"\"Record a hit for ``key`` and report whether it is within budget.\n\n        Returns ``(allowed, remaining, reset_at)``.\n        \"\"\"\n        ...\n\n\nclass InMemoryRateLimiterStore:\n    \"\"\"Sliding-window counter backed by a dict of deques, guarded by a lock.\n\n    Kept intentionally simple (a timestamp log per key) since the service is\n    single-instance; the :class:`RateLimiterStore` protocol is what makes it\n    possible to later swap this for a shared backend (Redis, etc.) without any\n    change to :class:`RateLimiter` or the API layer.\n    \"\"\"\n\n    def __init__(self) -> None:\n        self._lock = threading.Lock()\n        self._buckets: dict = {}\n\n    def hit(self, key: str, limit: int, window_seconds: float, now: Optional[float] = None):\n        now = time.time() if now is None else now\n        cutoff = now - window_seconds\n        with self._lock:\n            dq = self._buckets.setdefault(key, deque())\n            while dq and dq[0] <= cutoff:\n                dq.popleft()\n            allowed = len(dq) < limit\n            if allowed:\n                dq.append(now)\n            remaining = max(0, limit - len(dq))\n            reset_at = (dq[0] + window_seconds) if dq else (now + window_seconds)\n            return allowed, remaining, reset_at\n\n\nclass RateLimitMetrics:\n    \"\"\"In-memory counters of allow/deny decisions per rule, for monitoring.\"\"\"\n\n    def __init__(self) -> None:\n        self._lock = threading.Lock()\n        self._counts: dict = {}\n\n    def record(self, rule_name: str, allowed: bool) -> None:\n        with self._lock:\n            key = (rule_name, allowed)\n            self._counts[key] = self._counts.get(key, 0) + 1\n\n    def snapshot(self) -> dict:\n        with self._lock:\n            result: dict = {}\n            for (rule_name, allowed), count in self._counts.items():\n                bucket = result.setdefault(rule_name, {\"allowed\": 0, \"denied\": 0})\n                bucket[\"allowed\" if allowed else \"denied\"] += count\n            return result\n\n\nclass RateLimiter:\n    \"\"\"Classifies clients, applies named rules, and records outcomes.\"\"\"\n\n    def __init__(\n        self,\n        rules: dict,\n        store: Optional[RateLimiterStore] = None,\n        trusted_proxies: Optional[set] = None,\n    ) -> None:\n        self.store: RateLimiterStore = store or InMemoryRateLimiterStore()\n        self._rules_lock = threading.Lock()\n        self._rules: dict = dict(rules)\n        self.trusted_proxies = set(trusted_proxies or set())\n        self.metrics = RateLimitMetrics()\n\n    # -- rule management (hot-reloadable, no redeploy needed) ---------------\n    def set_rule(self, name: str, limit: int, window_seconds: float) -> None:\n        with self._rules_lock:\n            self._rules[name] = RateLimitRule(int(limit), float(window_seconds))\n\n    def get_rule(self, name: str) -> Optional[RateLimitRule]:\n        with self._rules_lock:\n            return self._rules.get(name)\n\n    def rules_snapshot(self) -> dict:\n        with self._rules_lock:\n            return {\n                name: {\"limit\": rule.limit, \"window_seconds\": rule.window_seconds}\n                for name, rule in self._rules.items()\n            }\n\n    # -- client identification ----------------------------------------------\n    def client_id(self, environ: dict) -> str:\n        remote = environ.get(\"REMOTE_ADDR\") or \"unknown\"\n        trusted = self.trusted_proxies\n        if trusted and (\"*\" in trusted or remote in trusted):\n            forwarded = environ.get(\"HTTP_X_FORWARDED_FOR\")\n            if forwarded:\n                return forwarded.split(\",\")[0].strip()\n        return remote\n\n    # -- the actual check -----------------------------------------------------\n    def check(self, rule_name: str, environ: dict, now: Optional[float] = None) -> RateLimitResult:\n        rule = self.get_rule(rule_name)\n        if rule is None:\n            # No rule configured for this name: allow, no headers emitted.\n            return RateLimitResult(True, None, None, None)\n        client = self.client_id(environ)\n        key = f\"{rule_name}:{client}\"\n        allowed, remaining, reset_at = self.store.hit(key, rule.limit, rule.window_seconds, now=now)\n        self.metrics.record(rule_name, allowed)\n        if not allowed:\n            logger.warning(\"rate limit exceeded: rule=%s client=%s\", rule_name, client)\n        return RateLimitResult(allowed, rule.limit, remaining, reset_at)\n\n\ndef build_default_limiter() -> RateLimiter:\n    \"\"\"Build a :class:`RateLimiter` from environment-driven config defaults.\"\"\"\n\n    from . import config\n\n    rules = {\n        \"shorten\": RateLimitRule(config.RATE_LIMIT_SHORTEN_LIMIT, config.RATE_LIMIT_SHORTEN_WINDOW),\n        \"redirect\": RateLimitRule(config.RATE_LIMIT_REDIRECT_LIMIT, config.RATE_LIMIT_REDIRECT_WINDOW),\n        \"admin\": RateLimitRule(config.RATE_LIMIT_ADMIN_LIMIT, config.RATE_LIMIT_ADMIN_WINDOW),\n    }\n    return RateLimiter(rules=rules, trusted_proxies=config.TRUSTED_PROXIES)\n",
+      "kind": "code"
+    },
+    {
+      "path": "url_shortener/config.py",
+      "content": "\"\"\"Environment-driven configuration for the URL shortener.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\n\nBASE_URL = os.environ.get(\"SHORTENER_BASE_URL\", \"http://localhost:8000\")\nSTORE_BACKEND = os.environ.get(\"SHORTENER_STORE\", \"memory\")  # \"memory\" | \"sqlite\"\nDB_PATH = os.environ.get(\"SHORTENER_DB_PATH\", \"shortener.db\")\nHOST = os.environ.get(\"SHORTENER_HOST\", \"127.0.0.1\")\nPORT = int(os.environ.get(\"SHORTENER_PORT\", \"8000\"))\n\n# -- rate limiting --------------------------------------------------------\n# Tight limit for link creation, looser limits for redirects/lookups and the\n# admin/analytics surface. All configurable without a code change.\nRATE_LIMIT_SHORTEN_LIMIT = int(os.environ.get(\"SHORTENER_RATE_LIMIT_SHORTEN\", \"10\"))\nRATE_LIMIT_SHORTEN_WINDOW = float(os.environ.get(\"SHORTENER_RATE_WINDOW_SHORTEN\", \"60\"))\n\nRATE_LIMIT_REDIRECT_LIMIT = int(os.environ.get(\"SHORTENER_RATE_LIMIT_REDIRECT\", \"100\"))\nRATE_LIMIT_REDIRECT_WINDOW = float(os.environ.get(\"SHORTENER_RATE_WINDOW_REDIRECT\", \"60\"))\n\nRATE_LIMIT_ADMIN_LIMIT = int(os.environ.get(\"SHORTENER_RATE_LIMIT_ADMIN\", \"30\"))\nRATE_LIMIT_ADMIN_WINDOW = float(os.environ.get(\"SHORTENER_RATE_WINDOW_ADMIN\", \"60\"))\n\n# Comma-separated list of peer addresses allowed to set X-Forwarded-For (e.g.\n# a reverse proxy/load balancer). Empty by default: the direct connection IP\n# is used and X-Forwarded-For is ignored, to avoid trivial spoofing.\nTRUSTED_PROXIES = {\n    addr.strip() for addr in os.environ.get(\"SHORTENER_TRUSTED_PROXIES\", \"\").split(\",\") if addr.strip()\n}\n",
+      "kind": "code"
+    },
+    {
+      "path": "url_shortener/api.py",
+      "content": "\"\"\"WSGI HTTP adapter over :class:`ShortenerService`.\n\nKept as a plain WSGI callable so it runs on the standard-library server and is\ntrivially testable without booting a socket (see ``tests/test_api.py``).\n\"\"\"\n\nfrom __future__ import annotations\n\nimport json\nimport logging\nimport time\n\nfrom .analytics import AnalyticsService\nfrom .ratelimit import RateLimiter, build_default_limiter\nfrom .service import AliasError, InvalidURLError, ShortenerService\n\nlogger = logging.getLogger(__name__)\n\n_REASON = {\n    200: \"OK\",\n    201: \"Created\",\n    302: \"Found\",\n    400: \"Bad Request\",\n    404: \"Not Found\",\n    429: \"Too Many Requests\",\n    500: \"Internal Server Error\",\n}\n\n\nclass WSGIApp:\n    \"\"\"Minimal router mapping HTTP requests onto the service.\n\n    ``limiter`` is a :class:`~url_shortener.ratelimit.RateLimiter`-like object\n    exposing ``check(rule_name, environ) -> RateLimitResult``. It guards link\n    creation, redirects and admin/analytics routes with per-rule sliding\n    window budgets, returning HTTP 429 with ``Retry-After`` when a client goes\n    over budget and attaching ``X-RateLimit-*`` headers otherwise. Defaults to\n    a config-driven in-memory limiter (see ``ratelimit.py``) when omitted.\n    \"\"\"\n\n    def __init__(self, service: ShortenerService | None = None, limiter: RateLimiter | None = None) -> None:\n        self.service = service or ShortenerService()\n        self.analytics = AnalyticsService(self.service.store)\n        self.limiter = limiter or build_default_limiter()\n\n    def __call__(self, environ, start_response):\n        method = environ.get(\"REQUEST_METHOD\", \"GET\")\n        path = environ.get(\"PATH_INFO\", \"/\")\n        try:\n            if path in (\"/healthz\", \"/health\"):\n                return self._json(start_response, 200, {\"status\": \"ok\"})\n\n            if path == \"/admin/metrics\" and method == \"GET\":\n                return self._with_rate_limit(\n                    environ, start_response, \"admin\", lambda sr, extra: self._metrics(sr, extra)\n                )\n\n            if path.startswith(\"/admin/config/rate-limits/\") and method == \"PUT\":\n                rule_name = path[len(\"/admin/config/rate-limits/\") :]\n                return self._with_rate_limit(\n                    environ,\n                    start_response,\n                    \"admin\",\n                    lambda sr, extra: self._update_rule(environ, sr, rule_name, extra),\n                )\n\n            if path == \"/api/shorten\" and method == \"POST\":\n                return self._with_rate_limit(\n                    environ,\n                    start_response,\n                    \"shorten\",\n                    lambda sr, extra: self._shorten(environ, sr, extra),\n                )\n\n            if path.startswith(\"/api/stats/\") and method == \"GET\":\n                code = path[len(\"/api/stats/\") :]\n                return self._with_rate_limit(\n                    environ,\n                    start_response,\n                    \"redirect\",\n                    lambda sr, extra: self._stats(sr, code, extra),\n                )\n\n            if method == \"GET\" and path != \"/\" and \"/\" not in path[1:]:\n                code = path[1:]\n                return self._with_rate_limit(\n                    environ,\n                    start_response,\n                    \"redirect\",\n                    lambda sr, extra: self._redirect(environ, sr, code, extra),\n                )\n\n            return self._json(start_response, 404, {\"error\": \"not found\"})\n        except (InvalidURLError, AliasError) as exc:\n            return self._json(start_response, 400, {\"error\": str(exc)})\n        except Exception:  # defensive: never leak internals to the client\n            return self._json(start_response, 500, {\"error\": \"internal error\"})\n\n    # -- rate limiting glue ---------------------------------------------------\n    def _with_rate_limit(self, environ, start_response, rule_name, handler):\n        result = self.limiter.check(rule_name, environ)\n        headers = result.headers()\n        if not result.allowed:\n            now = time.time()\n            retry_after = max(0, int(round((result.reset_at or now) - now)))\n            response_headers = list(headers) + [(\"Retry-After\", str(retry_after))]\n            return self._json(\n                start_response,\n                429,\n                {\"error\": \"rate limit exceeded\", \"retry_after\": retry_after},\n                extra_headers=response_headers,\n            )\n        return handler(start_response, headers)\n\n    def _metrics(self, start_response, extra_headers=None):\n        payload = {\n            \"rate_limits\": self.limiter.rules_snapshot(),\n            \"metrics\": self.limiter.metrics.snapshot(),\n        }\n        return self._json(start_response, 200, payload, extra_headers=extra_headers)\n\n    def _update_rule(self, environ, start_response, rule_name, extra_headers=None):\n        try:\n            data = json.loads(self._read_body(environ) or \"{}\")\n        except json.JSONDecodeError:\n            return self._json(\n                start_response, 400, {\"error\": \"invalid JSON body\"}, extra_headers=extra_headers\n            )\n        limit = data.get(\"limit\")\n        window_seconds = data.get(\"window_seconds\", data.get(\"window\"))\n        valid = (\n            isinstance(limit, (int, float))\n            and not isinstance(limit, bool)\n            and limit > 0\n            and isinstance(window_seconds, (int, float))\n            and not isinstance(window_seconds, bool)\n            and window_seconds > 0\n        )\n        if not valid:\n            return self._json(\n                start_response,\n                400,\n                {\"error\": \"limit and window_seconds must be positive numbers\"},\n                extra_headers=extra_headers,\n            )\n        self.limiter.set_rule(rule_name, int(limit), float(window_seconds))\n        rule = self.limiter.get_rule(rule_name)\n        return self._json(\n            start_response,\n            200,\n            {\"rule\": rule_name, \"limit\": rule.limit, \"window_seconds\": rule.window_seconds},\n            extra_headers=extra_headers,\n        )\n\n    # -- request handlers -------------------------------------------------\n    def _shorten(self, environ, start_response, extra_headers=None):\n        try:\n            data = json.loads(self._read_body(environ) or \"{}\")\n        except json.JSONDecodeError:\n            return self._json(\n                start_response, 400, {\"error\": \"invalid JSON body\"}, extra_headers=extra_headers\n            )\n        record = self.service.shorten(\n            data.get(\"url\"),\n            custom_alias=data.get(\"alias\"),\n            ttl_seconds=data.get(\"ttl_seconds\"),\n        )\n        return self._json(\n            start_response,\n            201,\n            {\n                \"code\": record.code,\n                \"short_url\": self.service.short_url(record.code),\n                \"long_url\": record.long_url,\n                \"expires_at\": record.expires_at,\n            },\n            extra_headers=extra_headers,\n        )\n\n    def _redirect(self, environ, start_response, code, extra_headers=None):\n        long_url = self.service.resolve(\n            code,\n            referrer=environ.get(\"HTTP_REFERER\"),\n            user_agent=environ.get(\"HTTP_USER_AGENT\"),\n        )\n        if long_url is None:\n            return self._json(\n                start_response, 404, {\"error\": \"unknown or expired code\"}, extra_headers=extra_headers\n            )\n        headers = [(\"Location\", long_url), (\"Content-Length\", \"0\")]\n        if extra_headers:\n            headers.extend(extra_headers)\n        start_response(\"302 Found\", headers)\n        return [b\"\"]\n\n    def _stats(self, start_response, code, extra_headers=None):\n        stats = self.service.stats(code)\n        if stats is None:\n            return self._json(\n                start_response, 404, {\"error\": \"unknown code\"}, extra_headers=extra_headers\n            )\n        stats[\"analytics\"] = self.analytics.report(code)\n        return self._json(start_response, 200, stats, extra_headers=extra_headers)\n\n    @staticmethod\n    def _read_body(environ) -> str:\n        try:\n            length = int(environ.get(\"CONTENT_LENGTH\") or 0)\n        except (TypeError, ValueError):\n            length = 0\n        if length <= 0:\n            return \"\"\n        return environ[\"wsgi.input\"].read(length).decode(\"utf-8\")\n\n    def _json(self, start_response, status, payload, extra_headers=None):\n        body = json.dumps(payload).encode(\"utf-8\")\n        headers = [(\"Content-Type\", \"application/json\"), (\"Content-Length\", str(len(body)))]\n        if extra_headers:\n            headers.extend(extra_headers)\n        start_response(f\"{status} {_REASON.get(status, 'OK')}\", headers)\n        return [body]\n\n\napp = WSGIApp()\n",
+      "kind": "code"
+    },
+    {
+      "path": "openapi.yaml",
+      "content": "openapi: 3.0.3\ninfo:\n  title: URL Shortener API\n  version: 1.0.0\n  description: >\n    Shorten URLs, redirect, read click analytics, and manage rate limits.\n    Endpoints subject to rate limiting return X-RateLimit-* headers and,\n    when the budget is exceeded, HTTP 429 with a Retry-After header.\nservers:\n  - url: http://localhost:8000\npaths:\n  /api/shorten:\n    post:\n      summary: Create a short link\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              type: object\n              required: [url]\n              properties:\n                url: { type: string, format: uri, example: \"https://example.com/page\" }\n                alias: { type: string, example: \"promo\" }\n                ttl_seconds: { type: integer, example: 3600 }\n      responses:\n        \"201\":\n          description: Short link created\n          content:\n            application/json:\n              schema:\n                type: object\n                properties:\n                  code: { type: string }\n                  short_url: { type: string }\n                  long_url: { type: string }\n                  expires_at: { type: number, nullable: true }\n        \"400\": { description: Invalid URL or alias }\n        \"429\": { description: Rate limit exceeded }\n  /{code}:\n    get:\n      summary: Redirect to the original URL\n      parameters:\n        - in: path\n          name: code\n          required: true\n          schema: { type: string }\n      responses:\n        \"302\": { description: Redirect to the long URL }\n        \"404\": { description: Unknown or expired code }\n        \"429\": { description: Rate limit exceeded }\n  /api/stats/{code}:\n    get:\n      summary: Click analytics for a code\n      parameters:\n        - in: path\n          name: code\n          required: true\n          schema: { type: string }\n      responses:\n        \"200\":\n          description: Stats payload\n          content:\n            application/json:\n              schema:\n                type: object\n                properties:\n                  code: { type: string }\n                  long_url: { type: string }\n                  clicks: { type: integer }\n        \"404\": { description: Unknown code }\n        \"429\": { description: Rate limit exceeded }\n  /admin/metrics:\n    get:\n      summary: Rate-limit rule config and allow/deny counters\n      responses:\n        \"200\": { description: Metrics snapshot }\n        \"429\": { description: Rate limit exceeded }\n  /admin/config/rate-limits/{ruleName}:\n    put:\n      summary: Hot-reload a rate-limit rule's threshold/window\n      parameters:\n        - in: path\n          name: ruleName\n          required: true\n          schema: { type: string }\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              type: object\n              required: [limit, window_seconds]\n              properties:\n                limit: { type: integer, example: 10 }\n                window_seconds: { type: number, example: 60 }\n      responses:\n        \"200\": { description: Rule updated }\n        \"400\": { description: Invalid rule payload }\n        \"429\": { description: Rate limit exceeded }\n  /healthz:\n    get:\n      summary: Liveness probe\n      responses:\n        \"200\": { description: Service is up }\n  /health:\n    get:\n      summary: Liveness probe (alias)\n      responses:\n        \"200\": { description: Service is up }\n",
+      "kind": "contract"
+    },
+    {
+      "path": "tests/test_ratelimit.py",
+      "content": "\"\"\"Tests for the rate limiting layer (unit + WSGI integration).\"\"\"\n\nimport io\nimport json\nimport unittest\n\nfrom url_shortener.api import WSGIApp\nfrom url_shortener.ratelimit import (\n    InMemoryRateLimiterStore,\n    RateLimiter,\n    RateLimitRule,\n)\n\n\ndef call(app, method, path, body=None, environ_extra=None):\n    raw = (body or \"\").encode(\"utf-8\")\n    environ = {\n        \"REQUEST_METHOD\": method,\n        \"PATH_INFO\": path,\n        \"wsgi.input\": io.BytesIO(raw),\n        \"CONTENT_LENGTH\": str(len(raw)),\n        \"REMOTE_ADDR\": \"127.0.0.1\",\n    }\n    if environ_extra:\n        environ.update(environ_extra)\n    captured = {}\n\n    def start_response(status, headers):\n        captured[\"status\"] = status\n        captured[\"headers\"] = dict(headers)\n\n    payload = b\"\".join(app(environ, start_response))\n    return int(captured[\"status\"].split()[0]), captured[\"headers\"], payload\n\n\nclass InMemoryStoreTests(unittest.TestCase):\n    def test_allows_up_to_limit_then_denies(self):\n        store = InMemoryRateLimiterStore()\n        t = 1000.0\n        for _ in range(3):\n            allowed, remaining, _ = store.hit(\"k\", 3, 60, now=t)\n            self.assertTrue(allowed)\n        allowed, remaining, reset_at = store.hit(\"k\", 3, 60, now=t)\n        self.assertFalse(allowed)\n        self.assertEqual(remaining, 0)\n\n    def test_window_resets_over_time(self):\n        store = InMemoryRateLimiterStore()\n        t = 1000.0\n        for _ in range(2):\n            self.assertTrue(store.hit(\"k\", 2, 10, now=t)[0])\n        self.assertFalse(store.hit(\"k\", 2, 10, now=t)[0])\n        # Move past the window: budget should be available again.\n        allowed, _, _ = store.hit(\"k\", 2, 10, now=t + 11)\n        self.assertTrue(allowed)\n\n\nclass RateLimiterTests(unittest.TestCase):\n    def _limiter(self, **rules):\n        return RateLimiter(rules=rules)\n\n    def test_check_enforces_named_rule(self):\n        limiter = self._limiter(test=RateLimitRule(2, 60))\n        environ = {\"REMOTE_ADDR\": \"1.2.3.4\"}\n        r1 = limiter.check(\"test\", environ, now=100.0)\n        r2 = limiter.check(\"test\", environ, now=100.0)\n        r3 = limiter.check(\"test\", environ, now=100.0)\n        self.assertTrue(r1.allowed)\n        self.assertTrue(r2.allowed)\n        self.assertFalse(r3.allowed)\n        self.assertEqual(r3.limit, 2)\n\n    def test_unconfigured_rule_allows_without_headers(self):\n        limiter = self._limiter()\n        result = limiter.check(\"missing\", {\"REMOTE_ADDR\": \"1.1.1.1\"})\n        self.assertTrue(result.allowed)\n        self.assertEqual(result.headers(), [])\n\n    def test_metrics_track_allow_and_deny(self):\n        limiter = self._limiter(test=RateLimitRule(1, 60))\n        environ = {\"REMOTE_ADDR\": \"9.9.9.9\"}\n        limiter.check(\"test\", environ, now=1.0)\n        limiter.check(\"test\", environ, now=1.0)\n        snap = limiter.metrics.snapshot()\n        self.assertEqual(snap[\"test\"][\"allowed\"], 1)\n        self.assertEqual(snap[\"test\"][\"denied\"], 1)\n\n    def test_client_id_ignores_forwarded_for_by_default(self):\n        limiter = self._limiter(test=RateLimitRule(5, 60))\n        environ = {\"REMOTE_ADDR\": \"10.0.0.1\", \"HTTP_X_FORWARDED_FOR\": \"1.2.3.4\"}\n        self.assertEqual(limiter.client_id(environ), \"10.0.0.1\")\n\n    def test_client_id_trusts_forwarded_for_when_configured(self):\n        limiter = RateLimiter(\n            rules={\"test\": RateLimitRule(5, 60)}, trusted_proxies={\"10.0.0.1\"}\n        )\n        environ = {\"REMOTE_ADDR\": \"10.0.0.1\", \"HTTP_X_FORWARDED_FOR\": \"1.2.3.4, 10.0.0.1\"}\n        self.assertEqual(limiter.client_id(environ), \"1.2.3.4\")\n\n    def test_set_rule_hot_reloads_limit(self):\n        limiter = self._limiter(test=RateLimitRule(5, 60))\n        limiter.set_rule(\"test\", 1, 60)\n        environ = {\"REMOTE_ADDR\": \"5.5.5.5\"}\n        self.assertTrue(limiter.check(\"test\", environ, now=0.0).allowed)\n        self.assertFalse(limiter.check(\"test\", environ, now=0.0).allowed)\n\n\nclass RateLimitIntegrationTests(unittest.TestCase):\n    def _app(self, shorten_limit=1, redirect_limit=100, admin_limit=30, window=60):\n        limiter = RateLimiter(\n            rules={\n                \"shorten\": RateLimitRule(shorten_limit, window),\n                \"redirect\": RateLimitRule(redirect_limit, window),\n                \"admin\": RateLimitRule(admin_limit, window),\n            }\n        )\n        return WSGIApp(limiter=limiter)\n\n    def test_shorten_within_limit_has_headers(self):\n        app = self._app(shorten_limit=5)\n        status, headers, _ = call(\n            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/a\"})\n        )\n        self.assertEqual(status, 201)\n        self.assertEqual(headers[\"X-RateLimit-Limit\"], \"5\")\n\n    def test_shorten_over_limit_returns_429(self):\n        app = self._app(shorten_limit=1)\n        status1, _, _ = call(\n            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/a\"})\n        )\n        status2, headers2, body2 = call(\n            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/b\"})\n        )\n        self.assertEqual(status1, 201)\n        self.assertEqual(status2, 429)\n        self.assertIn(\"Retry-After\", headers2)\n        self.assertEqual(json.loads(body2)[\"error\"], \"rate limit exceeded\")\n\n    def test_redirect_rate_limited_independently_of_shorten(self):\n        app = self._app(shorten_limit=1, redirect_limit=1)\n        _, _, body = call(\n            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/x\"})\n        )\n        code = json.loads(body)[\"code\"]\n        status1, _, _ = call(app, \"GET\", \"/\" + code)\n        status2, headers2, _ = call(app, \"GET\", \"/\" + code)\n        self.assertEqual(status1, 302)\n        self.assertEqual(status2, 429)\n        self.assertIn(\"Retry-After\", headers2)\n\n    def test_admin_metrics_endpoint(self):\n        app = self._app(shorten_limit=1)\n        call(app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/a\"}))\n        call(app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/b\"}))\n        status, _, body = call(app, \"GET\", \"/admin/metrics\")\n        self.assertEqual(status, 200)\n        payload = json.loads(body)\n        self.assertIn(\"shorten\", payload[\"metrics\"])\n        self.assertEqual(payload[\"metrics\"][\"shorten\"][\"allowed\"], 1)\n        self.assertEqual(payload[\"metrics\"][\"shorten\"][\"denied\"], 1)\n        self.assertEqual(payload[\"rate_limits\"][\"shorten\"][\"limit\"], 1)\n\n    def test_admin_update_rule_takes_effect(self):\n        app = self._app(shorten_limit=1)\n        status, _, body = call(\n            app,\n            \"PUT\",\n            \"/admin/config/rate-limits/shorten\",\n            json.dumps({\"limit\": 3, \"window_seconds\": 60}),\n        )\n        self.assertEqual(status, 200)\n        self.assertEqual(json.loads(body)[\"limit\"], 3)\n        # Now three shortens should succeed before a fourth is denied.\n        for i in range(3):\n            status, _, _ = call(\n                app, \"POST\", \"/api/shorten\", json.dumps({\"url\": f\"https://example.com/{i}\"})\n            )\n            self.assertEqual(status, 201)\n        status, _, _ = call(\n            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/last\"})\n        )\n        self.assertEqual(status, 429)\n\n    def test_admin_update_rule_rejects_bad_input(self):\n        app = self._app()\n        status, _, _ = call(\n            app, \"PUT\", \"/admin/config/rate-limits/shorten\", json.dumps({\"limit\": -1})\n        )\n        self.assertEqual(status, 400)\n\n    def test_health_alias(self):\n        app = self._app()\n        status, _, _ = call(app, \"GET\", \"/health\")\n        self.assertEqual(status, 200)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+      "kind": "test"
+    },
+    {
+      "path": "README.md",
+      "content": "# URL Shortener Service\n\nA single-process, dependency-free URL shortener with a REST API, pluggable persistence\n(in-memory or SQLite), click analytics, and built-in rate limiting \u2014 structured so each\nlayer can scale out independently. Generated by the Agentic SDLC system.\n\n## Run it\n\n```bash\npython -m url_shortener.server        # serves on http://127.0.0.1:8000 (in-memory store)\nSHORTENER_STORE=sqlite SHORTENER_DB_PATH=shortener.db python -m url_shortener.server   # durable\n```\n\nEnvironment: `SHORTENER_HOST`, `SHORTENER_PORT`, `SHORTENER_BASE_URL`, `SHORTENER_STORE`\n(`memory` | `sqlite`), `SHORTENER_DB_PATH`.\n\n### Rate limiting\n\nEvery client (identified by IP address) is subject to per-endpoint sliding-window limits.\nResponses to limited routes carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and\n`X-RateLimit-Reset` headers; going over budget returns `429 Too Many Requests` with a\n`Retry-After` header and a JSON error body.\n\n| Env var | Default | Applies to |\n| --- | --- | --- |\n| `SHORTENER_RATE_LIMIT_SHORTEN` / `SHORTENER_RATE_WINDOW_SHORTEN` | 10 / 60s | `POST /api/shorten` |\n| `SHORTENER_RATE_LIMIT_REDIRECT` / `SHORTENER_RATE_WINDOW_REDIRECT` | 100 / 60s | `GET /<code>`, `GET /api/stats/<code>` |\n| `SHORTENER_RATE_LIMIT_ADMIN` / `SHORTENER_RATE_WINDOW_ADMIN` | 30 / 60s | `/admin/*` |\n| `SHORTENER_TRUSTED_PROXIES` | *(empty)* | comma-separated peer IPs allowed to set `X-Forwarded-For` |\n\nRules can also be hot-reloaded at runtime (no redeploy) via\n`PUT /admin/config/rate-limits/{ruleName}` with a JSON body\n`{\"limit\": <int>, \"window_seconds\": <number>}`. Current rule config and allow/deny\ncounters are visible at `GET /admin/metrics` for monitoring and abuse detection.\n\nThe limiter is single-instance/in-memory by default but implemented behind a small\n`RateLimiterStore` interface (see `url_shortener/ratelimit.py`) so it can be swapped for a\nshared store (e.g. Redis) if the service is horizontally scaled.\n\n## Try it\n\n```bash\ncurl -X POST http://127.0.0.1:8000/api/shorten \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"url\": \"https://example.com/some/long/path\"}'\n# -> {\"code\": \"...\", \"short_url\": \"http://.../<code>\", ...}\n\ncurl -i http://127.0.0.1:8000/<code>          # 302 redirect\ncurl http://127.0.0.1:8000/api/stats/<code>   # click analytics\ncurl http://127.0.0.1:8000/admin/metrics      # rate-limit rules + counters\n```\n\n## Test it\n\n```bash\npython -m unittest discover -s tests -v\n```\n\n## Layout\n\n| Path | Responsibility |\n| --- | --- |\n| `url_shortener/base62.py` | id <-> slug codec |\n| `url_shortener/store.py` | in-memory + SQLite backends |\n| `url_shortener/service.py` | validation, shorten, resolve, stats |\n| `url_shortener/analytics.py` | click aggregation |\n| `url_shortener/ratelimit.py` | rate limiting (sliding window, metrics, hot-reload) |\n| `url_shortener/api.py` | WSGI HTTP adapter |\n| `url_shortener/server.py` | dev server entrypoint |\n| `openapi.yaml` | API contract |\n",
+      "kind": "docs"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "content": "# URL Shortener \u2014 Architecture\n\n## Layers\n\n1. **API (`api.py`)** \u2014 WSGI adapter. Parses requests, maps errors to status codes,\n   never leaks internals. Swappable for FastAPI/Flask without touching core logic.\n2. **Service (`service.py`)** \u2014 framework-agnostic business rules: URL validation,\n   idempotent shorten, alias handling, expiry, resolve, stats.\n3. **Store (`store.py`)** \u2014 `Store` protocol with in-memory and SQLite backends.\n4. **Analytics (`analytics.py`)** \u2014 read-side aggregation over click events.\n5. **Rate limiting (`ratelimit.py`)** \u2014 sliding-window request budgets per client/rule,\n   applied in the API layer before a handler runs.\n\n## Data model\n\n- `links(code PK, long_url, created_at, expires_at)`\n- `clicks(code FK, ts, referrer, user_agent)`\n\n## Key decisions\n\n- **Base62 over sequential id** \u2014 short, URL-safe, dense codes.\n- **Offset (100k)** \u2014 avoids trivially short/guessable slugs.\n- **Idempotent shorten** \u2014 identical live URLs reuse a code, preventing slug sprawl.\n- **Protocol-based store** \u2014 durability is a deployment choice, not a code change.\n\n## Rate limiting\n\n`WSGIApp` checks a `RateLimiter` before dispatching to a handler, keyed by\n`(rule_name, client_id)`:\n\n- **Client identification** \u2014 by `REMOTE_ADDR`; `X-Forwarded-For` is only honoured when\n  the peer address is listed in `SHORTENER_TRUSTED_PROXIES`, to avoid trivial spoofing when\n  no proxy is in front of the service.\n- **Rules** \u2014 named budgets (`shorten`, `redirect`, `admin`), each a `(limit, window_seconds)`\n  pair, loaded from environment variables at startup and hot-reloadable via\n  `PUT /admin/config/rate-limits/{ruleName}`.\n- **Counting** \u2014 `InMemoryRateLimiterStore` keeps a per-key deque of hit timestamps behind a\n  lock (thread-safe sliding window). It implements the `RateLimiterStore` protocol so a\n  shared backend (e.g. Redis) can be substituted for multi-instance deployments without\n  touching `RateLimiter` or the API layer.\n- **Responses** \u2014 allowed requests get `X-RateLimit-Limit/Remaining/Reset` headers; denied\n  requests get `429` with `Retry-After` and a JSON error body.\n- **Observability** \u2014 every decision increments `RateLimitMetrics`, exposed via\n  `GET /admin/metrics` alongside current rule config, and denials are logged.\n\n## Scaling path\n\n- Read-heavy: front redirects with a cache (code -> long_url).\n- Write scale: replace `id_seq` with a sharded/range id allocator.\n- Analytics: stream click events to a queue and aggregate out-of-band.\n- Rate limiting: swap `InMemoryRateLimiterStore` for a shared store (Redis) to keep limits\n  consistent across horizontally-scaled instances.\n",
+      "kind": "docs"
+    },
+    {
+      "path": "CHANGES.diff",
+      "content": "--- a/README.md\n+++ b/README.md\n@@ -1,8 +1,8 @@\n # URL Shortener Service\n \n A single-process, dependency-free URL shortener with a REST API, pluggable persistence\n-(in-memory or SQLite) and click analytics \u2014 structured so each layer can scale out\n-independently. Generated by the Agentic SDLC system.\n+(in-memory or SQLite), click analytics, and built-in rate limiting \u2014 structured so each\n+layer can scale out independently. Generated by the Agentic SDLC system.\n \n ## Run it\n \n@@ -14,6 +14,29 @@\n Environment: `SHORTENER_HOST`, `SHORTENER_PORT`, `SHORTENER_BASE_URL`, `SHORTENER_STORE`\n (`memory` | `sqlite`), `SHORTENER_DB_PATH`.\n \n+### Rate limiting\n+\n+Every client (identified by IP address) is subject to per-endpoint sliding-window limits.\n+Responses to limited routes carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and\n+`X-RateLimit-Reset` headers; going over budget returns `429 Too Many Requests` with a\n+`Retry-After` header and a JSON error body.\n+\n+| Env var | Default | Applies to |\n+| --- | --- | --- |\n+| `SHORTENER_RATE_LIMIT_SHORTEN` / `SHORTENER_RATE_WINDOW_SHORTEN` | 10 / 60s | `POST /api/shorten` |\n+| `SHORTENER_RATE_LIMIT_REDIRECT` / `SHORTENER_RATE_WINDOW_REDIRECT` | 100 / 60s | `GET /<code>`, `GET /api/stats/<code>` |\n+| `SHORTENER_RATE_LIMIT_ADMIN` / `SHORTENER_RATE_WINDOW_ADMIN` | 30 / 60s | `/admin/*` |\n+| `SHORTENER_TRUSTED_PROXIES` | *(empty)* | comma-separated peer IPs allowed to set `X-Forwarded-For` |\n+\n+Rules can also be hot-reloaded at runtime (no redeploy) via\n+`PUT /admin/config/rate-limits/{ruleName}` with a JSON body\n+`{\"limit\": <int>, \"window_seconds\": <number>}`. Current rule config and allow/deny\n+counters are visible at `GET /admin/metrics` for monitoring and abuse detection.\n+\n+The limiter is single-instance/in-memory by default but implemented behind a small\n+`RateLimiterStore` interface (see `url_shortener/ratelimit.py`) so it can be swapped for a\n+shared store (e.g. Redis) if the service is horizontally scaled.\n+\n ## Try it\n \n ```bash\n@@ -24,6 +47,7 @@\n \n curl -i http://127.0.0.1:8000/<code>          # 302 redirect\n curl http://127.0.0.1:8000/api/stats/<code>   # click analytics\n+curl http://127.0.0.1:8000/admin/metrics      # rate-limit rules + counters\n ```\n \n ## Test it\n@@ -40,6 +64,7 @@\n | `url_shortener/store.py` | in-memory + SQLite backends |\n | `url_shortener/service.py` | validation, shorten, resolve, stats |\n | `url_shortener/analytics.py` | click aggregation |\n+| `url_shortener/ratelimit.py` | rate limiting (sliding window, metrics, hot-reload) |\n | `url_shortener/api.py` | WSGI HTTP adapter |\n | `url_shortener/server.py` | dev server entrypoint |\n | `openapi.yaml` | API contract |\n--- a/docs/ARCHITECTURE.md\n+++ b/docs/ARCHITECTURE.md\n@@ -8,6 +8,8 @@\n    idempotent shorten, alias handling, expiry, resolve, stats.\n 3. **Store (`store.py`)** \u2014 `Store` protocol with in-memory and SQLite backends.\n 4. **Analytics (`analytics.py`)** \u2014 read-side aggregation over click events.\n+5. **Rate limiting (`ratelimit.py`)** \u2014 sliding-window request budgets per client/rule,\n+   applied in the API layer before a handler runs.\n \n ## Data model\n \n@@ -21,8 +23,30 @@\n - **Idempotent shorten** \u2014 identical live URLs reuse a code, preventing slug sprawl.\n - **Protocol-based store** \u2014 durability is a deployment choice, not a code change.\n \n+## Rate limiting\n+\n+`WSGIApp` checks a `RateLimiter` before dispatching to a handler, keyed by\n+`(rule_name, client_id)`:\n+\n+- **Client identification** \u2014 by `REMOTE_ADDR`; `X-Forwarded-For` is only honoured when\n+  the peer address is listed in `SHORTENER_TRUSTED_PROXIES`, to avoid trivial spoofing when\n+  no proxy is in front of the service.\n+- **Rules** \u2014 named budgets (`shorten`, `redirect`, `admin`), each a `(limit, window_seconds)`\n+  pair, loaded from environment variables at startup and hot-reloadable via\n+  `PUT /admin/config/rate-limits/{ruleName}`.\n+- **Counting** \u2014 `InMemoryRateLimiterStore` keeps a per-key deque of hit timestamps behind a\n+  lock (thread-safe sliding window). It implements the `RateLimiterStore` protocol so a\n+  shared backend (e.g. Redis) can be substituted for multi-instance deployments without\n+  touching `RateLimiter` or the API layer.\n+- **Responses** \u2014 allowed requests get `X-RateLimit-Limit/Remaining/Reset` headers; denied\n+  requests get `429` with `Retry-After` and a JSON error body.\n+- **Observability** \u2014 every decision increments `RateLimitMetrics`, exposed via\n+  `GET /admin/metrics` alongside current rule config, and denials are logged.\n+\n ## Scaling path\n \n - Read-heavy: front redirects with a cache (code -> long_url).\n - Write scale: replace `id_seq` with a sharded/range id allocator.\n - Analytics: stream click events to a queue and aggregate out-of-band.\n+- Rate limiting: swap `InMemoryRateLimiterStore` for a shared store (Redis) to keep limits\n+  consistent across horizontally-scaled instances.\n--- a/openapi.yaml\n+++ b/openapi.yaml\n@@ -2,7 +2,10 @@\n info:\n   title: URL Shortener API\n   version: 1.0.0\n-  description: Shorten URLs, redirect, and read click analytics.\n+  description: >\n+    Shorten URLs, redirect, read click analytics, and manage rate limits.\n+    Endpoints subject to rate limiting return X-RateLimit-* headers and,\n+    when the budget is exceeded, HTTP 429 with a Retry-After header.\n servers:\n   - url: http://localhost:8000\n paths:\n@@ -33,6 +36,7 @@\n                   long_url: { type: string }\n                   expires_at: { type: number, nullable: true }\n         \"400\": { description: Invalid URL or alias }\n+        \"429\": { description: Rate limit exceeded }\n   /{code}:\n     get:\n       summary: Redirect to the original URL\n@@ -44,6 +48,7 @@\n       responses:\n         \"302\": { description: Redirect to the long URL }\n         \"404\": { description: Unknown or expired code }\n+        \"429\": { description: Rate limit exceeded }\n   /api/stats/{code}:\n     get:\n       summary: Click analytics for a code\n@@ -64,8 +69,42 @@\n                   long_url: { type: string }\n                   clicks: { type: integer }\n         \"404\": { description: Unknown code }\n+        \"429\": { description: Rate limit exceeded }\n+  /admin/metrics:\n+    get:\n+      summary: Rate-limit rule config and allow/deny counters\n+      responses:\n+        \"200\": { description: Metrics snapshot }\n+        \"429\": { description: Rate limit exceeded }\n+  /admin/config/rate-limits/{ruleName}:\n+    put:\n+      summary: Hot-reload a rate-limit rule's threshold/window\n+      parameters:\n+        - in: path\n+          name: ruleName\n+          required: true\n+          schema: { type: string }\n+      requestBody:\n+        required: true\n+        content:\n+          application/json:\n+            schema:\n+              type: object\n+              required: [limit, window_seconds]\n+              properties:\n+                limit: { type: integer, example: 10 }\n+                window_seconds: { type: number, example: 60 }\n+      responses:\n+        \"200\": { description: Rule updated }\n+        \"400\": { description: Invalid rule payload }\n+        \"429\": { description: Rate limit exceeded }\n   /healthz:\n     get:\n       summary: Liveness probe\n       responses:\n         \"200\": { description: Service is up }\n+  /health:\n+    get:\n+      summary: Liveness probe (alias)\n+      responses:\n+        \"200\": { description: Service is up }\n--- /dev/null\n+++ b/tests/test_ratelimit.py\n@@ -0,0 +1,199 @@\n+\"\"\"Tests for the rate limiting layer (unit + WSGI integration).\"\"\"\n+\n+import io\n+import json\n+import unittest\n+\n+from url_shortener.api import WSGIApp\n+from url_shortener.ratelimit import (\n+    InMemoryRateLimiterStore,\n+    RateLimiter,\n+    RateLimitRule,\n+)\n+\n+\n+def call(app, method, path, body=None, environ_extra=None):\n+    raw = (body or \"\").encode(\"utf-8\")\n+    environ = {\n+        \"REQUEST_METHOD\": method,\n+        \"PATH_INFO\": path,\n+        \"wsgi.input\": io.BytesIO(raw),\n+        \"CONTENT_LENGTH\": str(len(raw)),\n+        \"REMOTE_ADDR\": \"127.0.0.1\",\n+    }\n+    if environ_extra:\n+        environ.update(environ_extra)\n+    captured = {}\n+\n+    def start_response(status, headers):\n+        captured[\"status\"] = status\n+        captured[\"headers\"] = dict(headers)\n+\n+    payload = b\"\".join(app(environ, start_response))\n+    return int(captured[\"status\"].split()[0]), captured[\"headers\"], payload\n+\n+\n+class InMemoryStoreTests(unittest.TestCase):\n+    def test_allows_up_to_limit_then_denies(self):\n+        store = InMemoryRateLimiterStore()\n+        t = 1000.0\n+        for _ in range(3):\n+            allowed, remaining, _ = store.hit(\"k\", 3, 60, now=t)\n+            self.assertTrue(allowed)\n+        allowed, remaining, reset_at = store.hit(\"k\", 3, 60, now=t)\n+        self.assertFalse(allowed)\n+        self.assertEqual(remaining, 0)\n+\n+    def test_window_resets_over_time(self):\n+        store = InMemoryRateLimiterStore()\n+        t = 1000.0\n+        for _ in range(2):\n+            self.assertTrue(store.hit(\"k\", 2, 10, now=t)[0])\n+        self.assertFalse(store.hit(\"k\", 2, 10, now=t)[0])\n+        # Move past the window: budget should be available again.\n+        allowed, _, _ = store.hit(\"k\", 2, 10, now=t + 11)\n+        self.assertTrue(allowed)\n+\n+\n+class RateLimiterTests(unittest.TestCase):\n+    def _limiter(self, **rules):\n+        return RateLimiter(rules=rules)\n+\n+    def test_check_enforces_named_rule(self):\n+        limiter = self._limiter(test=RateLimitRule(2, 60))\n+        environ = {\"REMOTE_ADDR\": \"1.2.3.4\"}\n+        r1 = limiter.check(\"test\", environ, now=100.0)\n+        r2 = limiter.check(\"test\", environ, now=100.0)\n+        r3 = limiter.check(\"test\", environ, now=100.0)\n+        self.assertTrue(r1.allowed)\n+        self.assertTrue(r2.allowed)\n+        self.assertFalse(r3.allowed)\n+        self.assertEqual(r3.limit, 2)\n+\n+    def test_unconfigured_rule_allows_without_headers(self):\n+        limiter = self._limiter()\n+        result = limiter.check(\"missing\", {\"REMOTE_ADDR\": \"1.1.1.1\"})\n+        self.assertTrue(result.allowed)\n+        self.assertEqual(result.headers(), [])\n+\n+    def test_metrics_track_allow_and_deny(self):\n+        limiter = self._limiter(test=RateLimitRule(1, 60))\n+        environ = {\"REMOTE_ADDR\": \"9.9.9.9\"}\n+        limiter.check(\"test\", environ, now=1.0)\n+        limiter.check(\"test\", environ, now=1.0)\n+        snap = limiter.metrics.snapshot()\n+        self.assertEqual(snap[\"test\"][\"allowed\"], 1)\n+        self.assertEqual(snap[\"test\"][\"denied\"], 1)\n+\n+    def test_client_id_ignores_forwarded_for_by_default(self):\n+        limiter = self._limiter(test=RateLimitRule(5, 60))\n+        environ = {\"REMOTE_ADDR\": \"10.0.0.1\", \"HTTP_X_FORWARDED_FOR\": \"1.2.3.4\"}\n+        self.assertEqual(limiter.client_id(environ), \"10.0.0.1\")\n+\n+    def test_client_id_trusts_forwarded_for_when_configured(self):\n+        limiter = RateLimiter(\n+            rules={\"test\": RateLimitRule(5, 60)}, trusted_proxies={\"10.0.0.1\"}\n+        )\n+        environ = {\"REMOTE_ADDR\": \"10.0.0.1\", \"HTTP_X_FORWARDED_FOR\": \"1.2.3.4, 10.0.0.1\"}\n+        self.assertEqual(limiter.client_id(environ), \"1.2.3.4\")\n+\n+    def test_set_rule_hot_reloads_limit(self):\n+        limiter = self._limiter(test=RateLimitRule(5, 60))\n+        limiter.set_rule(\"test\", 1, 60)\n+        environ = {\"REMOTE_ADDR\": \"5.5.5.5\"}\n+        self.assertTrue(limiter.check(\"test\", environ, now=0.0).allowed)\n+        self.assertFalse(limiter.check(\"test\", environ, now=0.0).allowed)\n+\n+\n+class RateLimitIntegrationTests(unittest.TestCase):\n+    def _app(self, shorten_limit=1, redirect_limit=100, admin_limit=30, window=60):\n+        limiter = RateLimiter(\n+            rules={\n+                \"shorten\": RateLimitRule(shorten_limit, window),\n+                \"redirect\": RateLimitRule(redirect_limit, window),\n+                \"admin\": RateLimitRule(admin_limit, window),\n+            }\n+        )\n+        return WSGIApp(limiter=limiter)\n+\n+    def test_shorten_within_limit_has_headers(self):\n+        app = self._app(shorten_limit=5)\n+        status, headers, _ = call(\n+            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/a\"})\n+        )\n+        self.assertEqual(status, 201)\n+        self.assertEqual(headers[\"X-RateLimit-Limit\"], \"5\")\n+\n+    def test_shorten_over_limit_returns_429(self):\n+        app = self._app(shorten_limit=1)\n+        status1, _, _ = call(\n+            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/a\"})\n+        )\n+        status2, headers2, body2 = call(\n+            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/b\"})\n+        )\n+        self.assertEqual(status1, 201)\n+        self.assertEqual(status2, 429)\n+        self.assertIn(\"Retry-After\", headers2)\n+        self.assertEqual(json.loads(body2)[\"error\"], \"rate limit exceeded\")\n+\n+    def test_redirect_rate_limited_independently_of_shorten(self):\n+        app = self._app(shorten_limit=1, redirect_limit=1)\n+        _, _, body = call(\n+            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/x\"})\n+        )\n+        code = json.loads(body)[\"code\"]\n+        status1, _, _ = call(app, \"GET\", \"/\" + code)\n+        status2, headers2, _ = call(app, \"GET\", \"/\" + code)\n+        self.assertEqual(status1, 302)\n+        self.assertEqual(status2, 429)\n+        self.assertIn(\"Retry-After\", headers2)\n+\n+    def test_admin_metrics_endpoint(self):\n+        app = self._app(shorten_limit=1)\n+        call(app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/a\"}))\n+        call(app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/b\"}))\n+        status, _, body = call(app, \"GET\", \"/admin/metrics\")\n+        self.assertEqual(status, 200)\n+        payload = json.loads(body)\n+        self.assertIn(\"shorten\", payload[\"metrics\"])\n+        self.assertEqual(payload[\"metrics\"][\"shorten\"][\"allowed\"], 1)\n+        self.assertEqual(payload[\"metrics\"][\"shorten\"][\"denied\"], 1)\n+        self.assertEqual(payload[\"rate_limits\"][\"shorten\"][\"limit\"], 1)\n+\n+    def test_admin_update_rule_takes_effect(self):\n+        app = self._app(shorten_limit=1)\n+        status, _, body = call(\n+            app,\n+            \"PUT\",\n+            \"/admin/config/rate-limits/shorten\",\n+            json.dumps({\"limit\": 3, \"window_seconds\": 60}),\n+        )\n+        self.assertEqual(status, 200)\n+        self.assertEqual(json.loads(body)[\"limit\"], 3)\n+        # Now three shortens should succeed before a fourth is denied.\n+        for i in range(3):\n+            status, _, _ = call(\n+                app, \"POST\", \"/api/shorten\", json.dumps({\"url\": f\"https://example.com/{i}\"})\n+            )\n+            self.assertEqual(status, 201)\n+        status, _, _ = call(\n+            app, \"POST\", \"/api/shorten\", json.dumps({\"url\": \"https://example.com/last\"})\n+        )\n+        self.assertEqual(status, 429)\n+\n+    def test_admin_update_rule_rejects_bad_input(self):\n+        app = self._app()\n+        status, _, _ = call(\n+            app, \"PUT\", \"/admin/config/rate-limits/shorten\", json.dumps({\"limit\": -1})\n+        )\n+        self.assertEqual(status, 400)\n+\n+    def test_health_alias(self):\n+        app = self._app()\n+        status, _, _ = call(app, \"GET\", \"/health\")\n+        self.assertEqual(status, 200)\n+\n+\n+if __name__ == \"__main__\":\n+    unittest.main()\n--- a/url_shortener/api.py\n+++ b/url_shortener/api.py\n@@ -7,9 +7,14 @@\n from __future__ import annotations\n \n import json\n+import logging\n+import time\n \n from .analytics import AnalyticsService\n+from .ratelimit import RateLimiter, build_default_limiter\n from .service import AliasError, InvalidURLError, ShortenerService\n+\n+logger = logging.getLogger(__name__)\n \n _REASON = {\n     200: \"OK\",\n@@ -25,39 +30,136 @@\n class WSGIApp:\n     \"\"\"Minimal router mapping HTTP requests onto the service.\n \n-    ``limiter`` is optional: any object with ``allow(key) -> bool`` guards link\n-    creation per client address (HTTP 429 when it says no).\"\"\"\n-\n-    def __init__(self, service: ShortenerService | None = None, limiter=None) -> None:\n+    ``limiter`` is a :class:`~url_shortener.ratelimit.RateLimiter`-like object\n+    exposing ``check(rule_name, environ) -> RateLimitResult``. It guards link\n+    creation, redirects and admin/analytics routes with per-rule sliding\n+    window budgets, returning HTTP 429 with ``Retry-After`` when a client goes\n+    over budget and attaching ``X-RateLimit-*`` headers otherwise. Defaults to\n+    a config-driven in-memory limiter (see ``ratelimit.py``) when omitted.\n+    \"\"\"\n+\n+    def __init__(self, service: ShortenerService | None = None, limiter: RateLimiter | None = None) -> None:\n         self.service = service or ShortenerService()\n         self.analytics = AnalyticsService(self.service.store)\n-        self.limiter = limiter\n+        self.limiter = limiter or build_default_limiter()\n \n     def __call__(self, environ, start_response):\n         method = environ.get(\"REQUEST_METHOD\", \"GET\")\n         path = environ.get(\"PATH_INFO\", \"/\")\n         try:\n-            if path == \"/healthz\":\n+            if path in (\"/healthz\", \"/health\"):\n                 return self._json(start_response, 200, {\"status\": \"ok\"})\n+\n+            if path == \"/admin/metrics\" and method == \"GET\":\n+                return self._with_rate_limit(\n+                    environ, start_response, \"admin\", lambda sr, extra: self._metrics(sr, extra)\n+                )\n+\n+            if path.startswith(\"/admin/config/rate-limits/\") and method == \"PUT\":\n+                rule_name = path[len(\"/admin/config/rate-limits/\") :]\n+                return self._with_rate_limit(\n+                    environ,\n+                    start_response,\n+                    \"admin\",\n+                    lambda sr, extra: self._update_rule(environ, sr, rule_name, extra),\n+                )\n+\n             if path == \"/api/shorten\" and method == \"POST\":\n-                if self.limiter and not self.limiter.allow(environ.get(\"REMOTE_ADDR\", \"?\")):\n-                    return self._json(start_response, 429, {\"error\": \"rate limit exceeded\"})\n-                return self._shorten(environ, start_response)\n+                return self._with_rate_limit(\n+                    environ,\n+                    start_response,\n+                    \"shorten\",\n+                    lambda sr, extra: self._shorten(environ, sr, extra),\n+                )\n+\n             if path.startswith(\"/api/stats/\") and method == \"GET\":\n-                return self._stats(start_response, path[len(\"/api/stats/\") :])\n+                code = path[len(\"/api/stats/\") :]\n+                return self._with_rate_limit(\n+                    environ,\n+                    start_response,\n+                    \"redirect\",\n+                    lambda sr, extra: self._stats(sr, code, extra),\n+                )\n+\n             if method == \"GET\" and path != \"/\" and \"/\" not in path[1:]:\n-                return self._redirect(environ, start_response, path[1:])\n+                code = path[1:]\n+                return self._with_rate_limit(\n+                    environ,\n+                    start_response,\n+                    \"redirect\",\n+                    lambda sr, extra: self._redirect(environ, sr, code, extra),\n+                )\n+\n             return self._json(start_response, 404, {\"error\": \"not found\"})\n         except (InvalidURLError, AliasError) as exc:\n             return self._json(start_response, 400, {\"error\": str(exc)})\n         except Exception:  # defensive: never leak internals to the client\n             return self._json(start_response, 500, {\"error\": \"internal error\"})\n \n-    def _shorten(self, environ, start_response):\n+    # -- rate limiting glue ---------------------------------------------------\n+    def _with_rate_limit(self, environ, start_response, rule_name, handler):\n+        result = self.limiter.check(rule_name, environ)\n+        headers = result.headers()\n+        if not result.allowed:\n+            now = time.time()\n+            retry_after = max(0, int(round((result.reset_at or now) - now)))\n+            response_headers = list(headers) + [(\"Retry-After\", str(retry_after))]\n+            return self._json(\n+                start_response,\n+                429,\n+                {\"error\": \"rate limit exceeded\", \"retry_after\": retry_after},\n+                extra_headers=response_headers,\n+            )\n+        return handler(start_response, headers)\n+\n+    def _metrics(self, start_response, extra_headers=None):\n+        payload = {\n+            \"rate_limits\": self.limiter.rules_snapshot(),\n+            \"metrics\": self.limiter.metrics.snapshot(),\n+        }\n+        return self._json(start_response, 200, payload, extra_headers=extra_headers)\n+\n+    def _update_rule(self, environ, start_response, rule_name, extra_headers=None):\n         try:\n             data = json.loads(self._read_body(environ) or \"{}\")\n         except json.JSONDecodeError:\n-            return self._json(start_response, 400, {\"error\": \"invalid JSON body\"})\n+            return self._json(\n+                start_response, 400, {\"error\": \"invalid JSON body\"}, extra_headers=extra_headers\n+            )\n+        limit = data.get(\"limit\")\n+        window_seconds = data.get(\"window_seconds\", data.get(\"window\"))\n+        valid = (\n+            isinstance(limit, (int, float))\n+            and not isinstance(limit, bool)\n+            and limit > 0\n+            and isinstance(window_seconds, (int, float))\n+            and not isinstance(window_seconds, bool)\n+            and window_seconds > 0\n+        )\n+        if not valid:\n+            return self._json(\n+                start_response,\n+                400,\n+                {\"error\": \"limit and window_seconds must be positive numbers\"},\n+                extra_headers=extra_headers,\n+            )\n+        self.limiter.set_rule(rule_name, int(limit), float(window_seconds))\n+        rule = self.limiter.get_rule(rule_name)\n+        return self._json(\n+            start_response,\n+            200,\n+            {\"rule\": rule_name, \"limit\": rule.limit, \"window_seconds\": rule.window_seconds},\n+            extra_headers=extra_headers,\n+        )\n+\n+    # -- request handlers -------------------------------------------------\n+    def _shorten(self, environ, start_response, extra_headers=None):\n+        try:\n+            data = json.loads(self._read_body(environ) or \"{}\")\n+        except json.JSONDecodeError:\n+            return self._json(\n+                start_response, 400, {\"error\": \"invalid JSON body\"}, extra_headers=extra_headers\n+            )\n         record = self.service.shorten(\n             data.get(\"url\"),\n             custom_alias=data.get(\"alias\"),\n@@ -72,25 +174,33 @@\n                 \"long_url\": record.long_url,\n                 \"expires_at\": record.expires_at,\n             },\n-        )\n-\n-    def _redirect(self, environ, start_response, code):\n+            extra_headers=extra_headers,\n+        )\n+\n+    def _redirect(self, environ, start_response, code, extra_headers=None):\n         long_url = self.service.resolve(\n             code,\n             referrer=environ.get(\"HTTP_REFERER\"),\n             user_agent=environ.get(\"HTTP_USER_AGENT\"),\n         )\n         if long_url is None:\n-            return self._json(start_response, 404, {\"error\": \"unknown or expired code\"})\n-        start_response(\"302 Found\", [(\"Location\", long_url), (\"Content-Length\", \"0\")])\n+            return self._json(\n+                start_response, 404, {\"error\": \"unknown or expired code\"}, extra_headers=extra_headers\n+            )\n+        headers = [(\"Location\", long_url), (\"Content-Length\", \"0\")]\n+        if extra_headers:\n+            headers.extend(extra_headers)\n+        start_response(\"302 Found\", headers)\n         return [b\"\"]\n \n-    def _stats(self, start_response, code):\n+    def _stats(self, start_response, code, extra_headers=None):\n         stats = self.service.stats(code)\n         if stats is None:\n-            return self._json(start_response, 404, {\"error\": \"unknown code\"})\n+            return self._json(\n+                start_response, 404, {\"error\": \"unknown code\"}, extra_headers=extra_headers\n+            )\n         stats[\"analytics\"] = self.analytics.report(code)\n-        return self._json(start_response, 200, stats)\n+        return self._json(start_response, 200, stats, extra_headers=extra_headers)\n \n     @staticmethod\n     def _read_body(environ) -> str:\n@@ -102,12 +212,12 @@\n             return \"\"\n         return environ[\"wsgi.input\"].read(length).decode(\"utf-8\")\n \n-    def _json(self, start_response, status, payload):\n+    def _json(self, start_response, status, payload, extra_headers=None):\n         body = json.dumps(payload).encode(\"utf-8\")\n-        start_response(\n-            f\"{status} {_REASON.get(status, 'OK')}\",\n-            [(\"Content-Type\", \"application/json\"), (\"Content-Length\", str(len(body)))],\n-        )\n+        headers = [(\"Content-Type\", \"application/json\"), (\"Content-Length\", str(len(body)))]\n+        if extra_headers:\n+            headers.extend(extra_headers)\n+        start_response(f\"{status} {_REASON.get(status, 'OK')}\", headers)\n         return [body]\n \n \n--- a/url_shortener/config.py\n+++ b/url_shortener/config.py\n@@ -9,3 +9,22 @@\n DB_PATH = os.environ.get(\"SHORTENER_DB_PATH\", \"shortener.db\")\n HOST = os.environ.get(\"SHORTENER_HOST\", \"127.0.0.1\")\n PORT = int(os.environ.get(\"SHORTENER_PORT\", \"8000\"))\n+\n+# -- rate limiting --------------------------------------------------------\n+# Tight limit for link creation, looser limits for redirects/lookups and the\n+# admin/analytics surface. All configurable without a code change.\n+RATE_LIMIT_SHORTEN_LIMIT = int(os.environ.get(\"SHORTENER_RATE_LIMIT_SHORTEN\", \"10\"))\n+RATE_LIMIT_SHORTEN_WINDOW = float(os.environ.get(\"SHORTENER_RATE_WINDOW_SHORTEN\", \"60\"))\n+\n+RATE_LIMIT_REDIRECT_LIMIT = int(os.environ.get(\"SHORTENER_RATE_LIMIT_REDIRECT\", \"100\"))\n+RATE_LIMIT_REDIRECT_WINDOW = float(os.environ.get(\"SHORTENER_RATE_WINDOW_REDIRECT\", \"60\"))\n+\n+RATE_LIMIT_ADMIN_LIMIT = int(os.environ.get(\"SHORTENER_RATE_LIMIT_ADMIN\", \"30\"))\n+RATE_LIMIT_ADMIN_WINDOW = float(os.environ.get(\"SHORTENER_RATE_WINDOW_ADMIN\", \"60\"))\n+\n+# Comma-separated list of peer addresses allowed to set X-Forwarded-For (e.g.\n+# a reverse proxy/load balancer). Empty by default: the direct connection IP\n+# is used and X-Forwarded-For is ignored, to avoid trivial spoofing.\n+TRUSTED_PROXIES = {\n+    addr.strip() for addr in os.environ.get(\"SHORTENER_TRUSTED_PROXIES\", \"\").split(\",\") if addr.strip()\n+}\n--- /dev/null\n+++ b/url_shortener/ratelimit.py\n@@ -0,0 +1,196 @@\n+\"\"\"Rate limiting layer for the URL shortener API.\n+\n+Design goals (see docs/ARCHITECTURE.md for the wider picture):\n+\n+* A small storage interface (:class:`RateLimiterStore`) decouples the counting\n+  algorithm from where counts live, so the default in-memory dict-backed store\n+  can later be swapped for a shared store (e.g. Redis) without touching call\n+  sites in ``api.py``.\n+* :class:`RateLimiter` classifies a client (by IP, optionally honouring\n+  ``X-Forwarded-For`` when the peer is a configured trusted proxy), looks up a\n+  named rule (limit + window), and applies a thread-safe sliding-window\n+  counter keyed by ``(rule_name, client_id)``.\n+* Rules can be hot-reloaded at runtime via :meth:`RateLimiter.set_rule` (used\n+  by the ``PUT /admin/config/rate-limits/{ruleName}`` endpoint) without a\n+  process restart.\n+* Every allow/deny decision is counted in :class:`RateLimitMetrics` and logged,\n+  so abuse can be monitored via ``GET /admin/metrics``.\n+\"\"\"\n+\n+from __future__ import annotations\n+\n+import logging\n+import threading\n+import time\n+from collections import deque\n+from dataclasses import dataclass\n+from typing import Optional, Protocol\n+\n+logger = logging.getLogger(__name__)\n+\n+\n+@dataclass(frozen=True)\n+class RateLimitRule:\n+    \"\"\"A named limit: at most ``limit`` requests per ``window_seconds``.\"\"\"\n+\n+    limit: int\n+    window_seconds: float\n+\n+\n+@dataclass\n+class RateLimitResult:\n+    \"\"\"Outcome of a single rate-limit check, ready to become HTTP headers.\"\"\"\n+\n+    allowed: bool\n+    limit: Optional[int]\n+    remaining: Optional[int]\n+    reset_at: Optional[float]\n+\n+    def headers(self) -> list:\n+        \"\"\"Standard ``X-RateLimit-*`` headers; empty if no rule applied.\"\"\"\n+\n+        if self.limit is None:\n+            return []\n+        now = time.time()\n+        reset_in = max(0, int(round((self.reset_at or now) - now)))\n+        return [\n+            (\"X-RateLimit-Limit\", str(self.limit)),\n+            (\"X-RateLimit-Remaining\", str(max(0, self.remaining or 0))),\n+            (\"X-RateLimit-Reset\", str(reset_in)),\n+        ]\n+\n+\n+class RateLimiterStore(Protocol):\n+    \"\"\"Storage contract for sliding-window counters.\n+\n+    Implementations must be safe to call concurrently from multiple threads\n+    (the standard-library WSGI server serves each request on its own thread\n+    when used with a threading mixin, and tests exercise this directly).\n+    \"\"\"\n+\n+    def hit(\n+        self, key: str, limit: int, window_seconds: float, now: Optional[float] = None\n+    ):\n+        \"\"\"Record a hit for ``key`` and report whether it is within budget.\n+\n+        Returns ``(allowed, remaining, reset_at)``.\n+        \"\"\"\n+        ...\n+\n+\n+class InMemoryRateLimiterStore:\n+    \"\"\"Sliding-window counter backed by a dict of deques, guarded by a lock.\n+\n+    Kept intentionally simple (a timestamp log per key) since the service is\n+    single-instance; the :class:`RateLimiterStore` protocol is what makes it\n+    possible to later swap this for a shared backend (Redis, etc.) without any\n+    change to :class:`RateLimiter` or the API layer.\n+    \"\"\"\n+\n+    def __init__(self) -> None:\n+        self._lock = threading.Lock()\n+        self._buckets: dict = {}\n+\n+    def hit(self, key: str, limit: int, window_seconds: float, now: Optional[float] = None):\n+        now = time.time() if now is None else now\n+        cutoff = now - window_seconds\n+        with self._lock:\n+            dq = self._buckets.setdefault(key, deque())\n+            while dq and dq[0] <= cutoff:\n+                dq.popleft()\n+            allowed = len(dq) < limit\n+            if allowed:\n+                dq.append(now)\n+            remaining = max(0, limit - len(dq))\n+            reset_at = (dq[0] + window_seconds) if dq else (now + window_seconds)\n+            return allowed, remaining, reset_at\n+\n+\n+class RateLimitMetrics:\n+    \"\"\"In-memory counters of allow/deny decisions per rule, for monitoring.\"\"\"\n+\n+    def __init__(self) -> None:\n+        self._lock = threading.Lock()\n+        self._counts: dict = {}\n+\n+    def record(self, rule_name: str, allowed: bool) -> None:\n+        with self._lock:\n+            key = (rule_name, allowed)\n+            self._counts[key] = self._counts.get(key, 0) + 1\n+\n+    def snapshot(self) -> dict:\n+        with self._lock:\n+            result: dict = {}\n+            for (rule_name, allowed), count in self._counts.items():\n+                bucket = result.setdefault(rule_name, {\"allowed\": 0, \"denied\": 0})\n+                bucket[\"allowed\" if allowed else \"denied\"] += count\n+            return result\n+\n+\n+class RateLimiter:\n+    \"\"\"Classifies clients, applies named rules, and records outcomes.\"\"\"\n+\n+    def __init__(\n+        self,\n+        rules: dict,\n+        store: Optional[RateLimiterStore] = None,\n+        trusted_proxies: Optional[set] = None,\n+    ) -> None:\n+        self.store: RateLimiterStore = store or InMemoryRateLimiterStore()\n+        self._rules_lock = threading.Lock()\n+        self._rules: dict = dict(rules)\n+        self.trusted_proxies = set(trusted_proxies or set())\n+        self.metrics = RateLimitMetrics()\n+\n+    # -- rule management (hot-reloadable, no redeploy needed) ---------------\n+    def set_rule(self, name: str, limit: int, window_seconds: float) -> None:\n+        with self._rules_lock:\n+            self._rules[name] = RateLimitRule(int(limit), float(window_seconds))\n+\n+    def get_rule(self, name: str) -> Optional[RateLimitRule]:\n+        with self._rules_lock:\n+            return self._rules.get(name)\n+\n+    def rules_snapshot(self) -> dict:\n+        with self._rules_lock:\n+            return {\n+                name: {\"limit\": rule.limit, \"window_seconds\": rule.window_seconds}\n+                for name, rule in self._rules.items()\n+            }\n+\n+    # -- client identification ----------------------------------------------\n+    def client_id(self, environ: dict) -> str:\n+        remote = environ.get(\"REMOTE_ADDR\") or \"unknown\"\n+        trusted = self.trusted_proxies\n+        if trusted and (\"*\" in trusted or remote in trusted):\n+            forwarded = environ.get(\"HTTP_X_FORWARDED_FOR\")\n+            if forwarded:\n+                return forwarded.split(\",\")[0].strip()\n+        return remote\n+\n+    # -- the actual check -----------------------------------------------------\n+    def check(self, rule_name: str, environ: dict, now: Optional[float] = None) -> RateLimitResult:\n+        rule = self.get_rule(rule_name)\n+        if rule is None:\n+            # No rule configured for this name: allow, no headers emitted.\n+            return RateLimitResult(True, None, None, None)\n+        client = self.client_id(environ)\n+        key = f\"{rule_name}:{client}\"\n+        allowed, remaining, reset_at = self.store.hit(key, rule.limit, rule.window_seconds, now=now)\n+        self.metrics.record(rule_name, allowed)\n+        if not allowed:\n+            logger.warning(\"rate limit exceeded: rule=%s client=%s\", rule_name, client)\n+        return RateLimitResult(allowed, rule.limit, remaining, reset_at)\n+\n+\n+def build_default_limiter() -> RateLimiter:\n+    \"\"\"Build a :class:`RateLimiter` from environment-driven config defaults.\"\"\"\n+\n+    from . import config\n+\n+    rules = {\n+        \"shorten\": RateLimitRule(config.RATE_LIMIT_SHORTEN_LIMIT, config.RATE_LIMIT_SHORTEN_WINDOW),\n+        \"redirect\": RateLimitRule(config.RATE_LIMIT_REDIRECT_LIMIT, config.RATE_LIMIT_REDIRECT_WINDOW),\n+        \"admin\": RateLimitRule(config.RATE_LIMIT_ADMIN_LIMIT, config.RATE_LIMIT_ADMIN_WINDOW),\n+    }\n+    return RateLimiter(rules=rules, trusted_proxies=config.TRUSTED_PROXIES)\n",
+      "kind": "change"
+    },
+    {
+      "path": "ENGINEERING_SUMMARY.md",
+      "content": "# Engineering Summary\n\n**Requirement:** Add rate limiting to the existing URL shortener API to prevent abuse.\n**Classification:** brownfield\n**Validation:** 6/6 checks passed\n\n## Implementation Plan\n- Level 0: design-1 (design)\n- Level 1: codebase-impact-1 (codebase_impact)\n- Level 2: code-config-1 (code), code-identify-1 (code, reused), code-storage-1 (code, reused)\n- Level 3: code-core-1 (code, reused), docs-ops-1 (docs, reused)\n- Level 4: code-middleware-1 (code, reused), tests-unit-1 (tests, reused)\n- Level 5: code-response-1 (code, reused)\n- Level 6: code-apply-1 (code, reused)\n- Level 7: code-bypass-1 (code, reused), docs-api-1 (docs, reused)\n- Level 8: tests-integration-1 (tests, reused)\n- Level 9: tests-load-1 (tests, reused)\n- Level 10: validate-1 (validate)\n- Level 11: summary-1 (summary)\n\n## Rationale (key decisions & agent decision log)\n- Target stack for this slice: pure Python 3 standard library only (http.server or wsgiref), no external frameworks or packages, matching the constraint that the implementation target must run as a single process with in-memory/SQLite persistence\n- Rate limiting algorithm: sliding-window counter (fixed window with rollover check) implemented via a dict of counters guarded by a single threading.Lock for correctness under Python's GIL-bound concurrency; chosen over token bucket for simplicity of headers (X-RateLimit-Remaining/Reset map cleanly to window boundaries)\n- Client identification: default to the raw socket peer IP; only trust X-Forwarded-For header if the connecting peer IP is explicitly listed in a TRUSTED_PROXIES env var, to avoid trivial spoofing when no proxy is confirmed present\n- No authentication system detected, so a single anonymous tier keyed purely by client IP is applied; the RuleRegistry and RateLimitRule schema include a 'tier' field so an API-key/user tier can be added later without redesign\n- Rules and thresholds are read from environment variables (RATE_LIMIT_SHORTEN_LIMIT, RATE_LIMIT_SHORTEN_WINDOW, RATE_LIMIT_REDIRECT_LIMIT, RATE_LIMIT_REDIRECT_WINDOW) at startup, with an optional SQLite `rate_limit_config` table for runtime overrides via the /admin/config endpoint, satisfying 'configurable without redeploy'\n- RateLimiterStore is defined as an abstract interface (get_and_increment(key, limit, window) -> (allowed, remaining, reset_at)) with InMemoryRateLimiterStore as the only implementation in this slice, isolating the swap point for a future shared store\n- 429 responses always include Retry-After (seconds) and X-RateLimit-Limit/Remaining/Reset headers; all other responses also include X-RateLimit-Limit/Remaining/Reset for transparency\n- Metrics are kept in-memory (counters + a bounded deque of recent block events) and exposed via /admin/metrics rather than pushed to an external monitoring system, consistent with single-process/stdlib-only constraint\n- Short URL persistence uses SQLite (stdlib sqlite3) as already assumed for the core shortener; rate limit counters are NOT persisted to SQLite since they are ephemeral and per-process, avoiding write amplification\n- Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).\n- Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default\n- CodebaseAnalyst: scan-repo - a real repository path exists \u2192 scan it for candidate touch points\n- CodeGenerator: propose-change - an existing repository was given \u2192 propose a change set against it (only new/changed files, validated against the repo's own tests)\n- CodeGenerator: reuse - code already generated from the current design; 'code-identify-1' is covered by it\n- CodeGenerator: reuse - code already generated from the current design; 'code-storage-1' is covered by it\n- CodeGenerator: reuse - code already generated from the current design; 'code-core-1' is covered by it\n- DocGenerator: reuse - change mode: documentation changes are part of the proposed change set; 'docs-ops-1' is covered\n- CodeGenerator: reuse - code already generated from the current design; 'code-middleware-1' is covered by it\n- TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-unit-1' is covered\n- CodeGenerator: reuse - code already generated from the current design; 'code-response-1' is covered by it\n- CodeGenerator: reuse - code already generated from the current design; 'code-apply-1' is covered by it\n- CodeGenerator: reuse - code already generated from the current design; 'code-bypass-1' is covered by it\n- DocGenerator: reuse - change mode: documentation changes are part of the proposed change set; 'docs-api-1' is covered\n- TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-integration-1' is covered\n- TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-load-1' is covered\n- Validator: validate - compile code, run tests, check contract & docs\n- SummaryWriter: summarize - consolidate the run into the final summary\n\n\n## API Contract (design) and implementation coverage\n\n| Method | Path | Summary | Status | In generated slice |\n| --- | --- | --- | --- | --- |\n| `POST` | `/shorten` | Create a short URL; subject to strict rate limit (default 10 req/min per client IP) | 201 | yes |\n| `GET` | `/{shortCode}` | Redirect to original URL; subject to lenient rate limit (default 100 req/min per client IP) | 302 | yes |\n| `GET` | `/admin/metrics` | Expose current rate-limit metrics (allowed/blocked counts per rule, recent 429 events) for monitoring | 200 | yes |\n| `PUT` | `/admin/config/rate-limits/{ruleName}` | Update a rate limit rule's threshold/window at runtime without redeploy (writes to SQLite override table, RuleRegistry hot-reloads) | 200 | yes |\n| `GET` | `/health` | Basic liveness check, exempt from rate limiting | 200 | yes |\n\n## Codebase Impact (brownfield)\n\n- existing file (candidate touch point, term-overlap score 21): url_shortener/api.py\n- existing file (candidate touch point, term-overlap score 8): url_shortener/config.py\n- existing file (candidate touch point, term-overlap score 7): url_shortener/server.py\n- existing file (candidate touch point, term-overlap score 6): tests/test_service.py\n- existing file (candidate touch point, term-overlap score 4): url_shortener/__init__.py\n- existing file (candidate touch point, term-overlap score 3): url_shortener/analytics.py\n- existing file (candidate touch point, term-overlap score 3): url_shortener/service.py\n- existing file (candidate touch point, term-overlap score 2): tests/test_api.py\n- existing file (candidate touch point, term-overlap score 2): url_shortener/base62.py\n- existing file (candidate touch point, term-overlap score 2): url_shortener/store.py\n- HTTP layer: Python stdlib http.server (or existing WSGI app) exposing /shorten, /:shortCode, /admin/metrics, /admin/config: assess for 'add, rate limit' impact\n- RateLimitMiddleware: wraps each request handler, resolves client identity and applicable rule, calls RateLimiterStore, sets response headers, short-circuits with 429 when exceeded: assess for 'add, rate limit' impact\n- ClientIdentifier: derives a stable client key from remote socket IP or trusted X-Forwarded-For header (only trusted if proxy IP is in TRUSTED_PROXIES config): assess for 'add, rate limit' impact\n- RateLimiterStore (interface) + InMemoryRateLimiterStore (impl): thread-safe sliding-window counters using dict + threading.Lock, keyed by client_id+rule+window: assess for 'add, rate limit' impact\n- RuleRegistry: holds per-endpoint RateLimitRule objects (limit, window_seconds, name) loaded from env vars / config table, reloadable without process restart: assess for 'add, rate limit' impact\n- MetricsCollector: in-memory counters (allowed_count, blocked_count) per rule/client bucket, plus a rolling log of recent 429 events for abuse detection; exposed at GET /admin/metrics: assess for 'add, rate limit' impact\n- URLShortenerService: existing core logic (create short URL, resolve redirect): assess for 'add, rate limit' impact\n- ConfigLoader: reads env vars at startup (and optionally a config.json / SQLite `config` table) into RuleRegistry; supports periodic re-read for hot config updates: assess for 'add, rate limit' impact\n- Persistence: SQLite file (urls.db) for short URL mappings (existing), plus optional SQLite table `rate_limit_config` for dynamic rule overrides; rate counters themselves stay in-memory per assumption of single instance: assess for 'add, rate limit' impact\n- New concern: request-rate accounting -> add a limiter module and 429 responses; store per-key counters/windows.\n\n## Proposed change set (against the existing repository)\n\nAdded a thread-safe, in-memory sliding-window rate limiter (`url_shortener/ratelimit.py`) with a pluggable `RateLimiterStore` interface, per-rule configuration (tight for `POST /api/shorten`, loose for redirects/analytics, separate tier for admin routes), client identification by IP (with opt-in trusted-proxy `X-Forwarded-For` support), and an in-memory metrics registry. Wired it into `url_shortener/api.py` so every relevant endpoint is checked before being served, returning `429` with `Retry-After` and JSON error body when exceeded, and attaching `X-RateLimit-*` headers to all responses for those routes. Added two new admin endpoints, `GET /admin/metrics` (exposes rate-limit metrics/rules for monitoring) and `PUT /admin/config/rate-limits/{ruleName}` (hot-reloads a rule's limit/window without redeploy), plus a `/health` alias. Extended `url_shortener/config.py` with environment-driven defaults for the shorten/redirect/admin rules and trusted proxies. Updated docs (`README.md`, `docs/ARCHITECTURE.md`, `openapi.yaml`) and added `tests/test_ratelimit.py` covering the sliding-window store, header/429 behaviour, trusted-proxy client identification, metrics, and hot rule updates, without changing any existing endpoint contracts.\n\n| File | Change | Lines |\n| --- | --- | --- |\n| `README.md` | modified | +27 / -2 |\n| `docs/ARCHITECTURE.md` | modified | +24 / -0 |\n| `openapi.yaml` | modified | +40 / -1 |\n| `tests/test_ratelimit.py` | new | +199 / -0 |\n| `url_shortener/api.py` | modified | +136 / -26 |\n| `url_shortener/config.py` | modified | +19 / -0 |\n| `url_shortener/ratelimit.py` | new | +196 / -0 |\n\nFull patch: `CHANGES.diff`. The repository itself was not modified.\n\n## Generated Artifacts\n- url_shortener/ratelimit.py\n- url_shortener/config.py\n- url_shortener/api.py\n- openapi.yaml\n- tests/test_ratelimit.py\n- README.md\n- docs/ARCHITECTURE.md\n- CHANGES.diff\n\n## Validation\n\n**Result:** 6/6 checks passed\n\n| Check | Result | Detail |\n| --- | --- | --- |\n| code compiles | PASS | all files compiled |\n| tests pass | PASS | Ran 35 tests in 0.002s \u2014 OK |\n| api contract present | PASS | openapi.yaml found |\n| documentation present | PASS | docs generated |\n| change set present | PASS | 7 file(s) changed; repository tests re-run with the change applied |\n| static safety scan | PASS | no findings |\n\nApproach:\n- Static safety (first, before anything runs): an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle, import aliases resolved), imports outside the standard library, hard-coded secrets and modules that shadow the standard library; code with a high-severity finding is not executed.\n- Static: every generated .py file is compiled.\n- Dynamic: the generated unit + integration suite is executed in an isolated interpreter (python -I) in a subprocess, with a timeout and a credential-scrubbed environment.\n- Contract: an OpenAPI document must exist whenever the design exposes an API (existence is checked, not conformance).\n- Documentation: README/architecture docs must be present.\n- Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.\n- Human: a final acceptance gate reviews this report before the run is accepted.\n- Model output: LLM-authored code was accepted only after passing a sandbox compile+test gate (a rejected bundle gets one repair pass with the sandbox output); otherwise the verified template was used.\n\n## Run Monitoring\n- provider: llm\n- tasks_completed: 16\n- retries: 0\n- repairs: 0\n- degradations: 0\n- parallel_levels: 4\n- reused_tasks: 12\n- human_gates_passed_before_summary: 2\n- llm_calls: 5\n- llm_tokens: 53698\n- llm_est_cost_usd: 0.4084\n- llm_fallbacks: []\n\n## Risks\n- Persistence: an in-memory store (data lost on restart) or SQLite (single file, single node) where configured; a multi-node deployment needs an external database.\n- Rate limiting in the generated slice is in-process (resets on restart, not shared across instances); write endpoints are unauthenticated.\n- Generated tests cover core paths; add load/security tests before production.\n\n## Trade-offs\n- Prototype stores rate-limit counters in a process-local dict protected by a lock, correct only for a single instance; production running multiple instances behind a load balancer would need a shared, atomic counter store (e.g., Redis with INCR+EXPIRE or a Lua script) to keep limits consistent across nodes\n- Prototype trusts X-Forwarded-For only via a static TRUSTED_PROXIES allowlist read at startup; production would integrate with the actual reverse proxy/load balancer configuration and possibly mTLS or signed headers to harden against spoofing\n- Prototype uses fixed/sliding window counters for simplicity and predictable headers; production might adopt a token-bucket or leaky-bucket algorithm for smoother burst handling at the cost of slightly more complex state\n- Prototype exposes metrics via a simple JSON admin endpoint read from in-memory counters; production would export metrics to a time-series system (e.g., Prometheus) for alerting and long-term abuse trend analysis\n- Prototype allows runtime rule updates via SQLite-backed overrides polled/reloaded in-process; production would use a centralized config service or feature-flag system to push updates instantly to all instances\n- Prototype keeps a bounded in-memory log of recent 429 events for quick inspection; production would ship structured logs to a centralized logging/SIEM pipeline for durable abuse detection and forensics\n\n## Assumptions\n- What technology stack and framework is the existing URL shortener built with (e.g., Node/Express, Python/Flask/FastAPI, Java/Spring)? -> assumed: Inspect the 'demo' repository to detect the stack automatically; assume Node.js/Express if unable to determine otherwise, and adapt implementation accordingly.\n- Is the API deployed as a single instance or horizontally scaled across multiple servers/containers? -> assumed: Assume single-instance deployment for simplicity; use an in-memory store, but structure the code to allow swapping in Redis later if needed.\n- Should rate limits differ by client type (anonymous IP-based vs authenticated API key/user), and are there existing authentication mechanisms to leverage? -> assumed: Apply a single rate limit tier based on client IP address if no authentication system is detected in the repository.\n- What specific endpoints need rate limiting - only URL creation, or also redirects/lookups and any other endpoints? -> assumed: Apply rate limiting to the URL creation endpoint(s) primarily, and apply a more lenient limit to redirect/lookup endpoints to prevent abuse without harming normal usage.\n- What are the desired rate limit thresholds (requests per time window)? -> assumed: Use a reasonable default such as 10 requests per minute for URL creation and 100 requests per minute for redirects, configurable via environment variables.\n- Is there an existing reverse proxy or load balancer in front of the API that sets headers like X-Forwarded-For? -> assumed: Assume no proxy is present initially; use the direct connection IP, but add support for trusting X-Forwarded-For if a proxy config is detected in the repo.\n\n## Limitations\n- Reasoning and code authoring were model-driven; no stage needed the deterministic fallback.\n- The design decisions under Rationale describe the model's target design. What is verified for the generated slice is: the endpoints marked 'yes' in the coverage table exist in the code, the code compiles, passes the static scan, and passes the model's own tests. Individual decisions (e.g. an async queue, a required header) are not checked against the code; a critic agent that does so is the next step. The API contract and README are synthesized from the design by the Repair agent when the model's bundle does not include them.\n- Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).\n- Human checkpoints are console-based in this prototype.\n- The validation sandbox is an isolated-mode subprocess with a timeout and a scrubbed environment, not a network-isolated container or separate OS user.\n- Change mode: the repository was only read; the proposal is the change set in this folder plus CHANGES.diff, validated on a throwaway copy of the repository with the change applied (its tests/ suite plus the new tests). The model sees a relevance-ranked subset of the repository (~60 KB); file deletions are not proposed.\n",
+      "kind": "docs"
+    }
+  ],
+  "validation": {
+    "checks": [
+      {
+        "name": "code compiles",
+        "passed": true,
+        "detail": "all files compiled"
+      },
+      {
+        "name": "tests pass",
+        "passed": true,
+        "detail": "Ran 35 tests in 0.002s \u2014 OK"
+      },
+      {
+        "name": "api contract present",
+        "passed": true,
+        "detail": "openapi.yaml found"
+      },
+      {
+        "name": "documentation present",
+        "passed": true,
+        "detail": "docs generated"
+      },
+      {
+        "name": "change set present",
+        "passed": true,
+        "detail": "7 file(s) changed; repository tests re-run with the change applied"
+      },
+      {
+        "name": "static safety scan",
+        "passed": true,
+        "detail": "no findings"
+      }
+    ],
+    "risks": [
+      "Persistence: an in-memory store (data lost on restart) or SQLite (single file, single node) where configured; a multi-node deployment needs an external database.",
+      "Rate limiting in the generated slice is in-process (resets on restart, not shared across instances); write endpoints are unauthenticated.",
+      "Generated tests cover core paths; add load/security tests before production."
+    ]
+  },
+  "summary": {
+    "requirement": "Add rate limiting to the existing URL shortener API to prevent abuse.",
+    "kind": "brownfield",
+    "implementation_plan": [
+      "Level 0: design-1 (design)",
+      "Level 1: codebase-impact-1 (codebase_impact)",
+      "Level 2: code-config-1 (code), code-identify-1 (code, reused), code-storage-1 (code, reused)",
+      "Level 3: code-core-1 (code, reused), docs-ops-1 (docs, reused)",
+      "Level 4: code-middleware-1 (code, reused), tests-unit-1 (tests, reused)",
+      "Level 5: code-response-1 (code, reused)",
+      "Level 6: code-apply-1 (code, reused)",
+      "Level 7: code-bypass-1 (code, reused), docs-api-1 (docs, reused)",
+      "Level 8: tests-integration-1 (tests, reused)",
+      "Level 9: tests-load-1 (tests, reused)",
+      "Level 10: validate-1 (validate)",
+      "Level 11: summary-1 (summary)"
+    ],
+    "rationale": [
+      "Target stack for this slice: pure Python 3 standard library only (http.server or wsgiref), no external frameworks or packages, matching the constraint that the implementation target must run as a single process with in-memory/SQLite persistence",
+      "Rate limiting algorithm: sliding-window counter (fixed window with rollover check) implemented via a dict of counters guarded by a single threading.Lock for correctness under Python's GIL-bound concurrency; chosen over token bucket for simplicity of headers (X-RateLimit-Remaining/Reset map cleanly to window boundaries)",
+      "Client identification: default to the raw socket peer IP; only trust X-Forwarded-For header if the connecting peer IP is explicitly listed in a TRUSTED_PROXIES env var, to avoid trivial spoofing when no proxy is confirmed present",
+      "No authentication system detected, so a single anonymous tier keyed purely by client IP is applied; the RuleRegistry and RateLimitRule schema include a 'tier' field so an API-key/user tier can be added later without redesign",
+      "Rules and thresholds are read from environment variables (RATE_LIMIT_SHORTEN_LIMIT, RATE_LIMIT_SHORTEN_WINDOW, RATE_LIMIT_REDIRECT_LIMIT, RATE_LIMIT_REDIRECT_WINDOW) at startup, with an optional SQLite `rate_limit_config` table for runtime overrides via the /admin/config endpoint, satisfying 'configurable without redeploy'",
+      "RateLimiterStore is defined as an abstract interface (get_and_increment(key, limit, window) -> (allowed, remaining, reset_at)) with InMemoryRateLimiterStore as the only implementation in this slice, isolating the swap point for a future shared store",
+      "429 responses always include Retry-After (seconds) and X-RateLimit-Limit/Remaining/Reset headers; all other responses also include X-RateLimit-Limit/Remaining/Reset for transparency",
+      "Metrics are kept in-memory (counters + a bounded deque of recent block events) and exposed via /admin/metrics rather than pushed to an external monitoring system, consistent with single-process/stdlib-only constraint",
+      "Short URL persistence uses SQLite (stdlib sqlite3) as already assumed for the core shortener; rate limit counters are NOT persisted to SQLite since they are ephemeral and per-process, avoiding write amplification",
+      "Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).",
+      "Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default",
+      "CodebaseAnalyst: scan-repo - a real repository path exists \u2192 scan it for candidate touch points",
+      "CodeGenerator: propose-change - an existing repository was given \u2192 propose a change set against it (only new/changed files, validated against the repo's own tests)",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-identify-1' is covered by it",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-storage-1' is covered by it",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-core-1' is covered by it",
+      "DocGenerator: reuse - change mode: documentation changes are part of the proposed change set; 'docs-ops-1' is covered",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-middleware-1' is covered by it",
+      "TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-unit-1' is covered",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-response-1' is covered by it",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-apply-1' is covered by it",
+      "CodeGenerator: reuse - code already generated from the current design; 'code-bypass-1' is covered by it",
+      "DocGenerator: reuse - change mode: documentation changes are part of the proposed change set; 'docs-api-1' is covered",
+      "TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-integration-1' is covered",
+      "TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-load-1' is covered",
+      "Validator: validate - compile code, run tests, check contract & docs",
+      "SummaryWriter: summarize - consolidate the run into the final summary"
+    ],
+    "artifacts": [
+      "url_shortener/ratelimit.py",
+      "url_shortener/config.py",
+      "url_shortener/api.py",
+      "openapi.yaml",
+      "tests/test_ratelimit.py",
+      "README.md",
+      "docs/ARCHITECTURE.md",
+      "CHANGES.diff"
+    ],
+    "risks": [
+      "Persistence: an in-memory store (data lost on restart) or SQLite (single file, single node) where configured; a multi-node deployment needs an external database.",
+      "Rate limiting in the generated slice is in-process (resets on restart, not shared across instances); write endpoints are unauthenticated.",
+      "Generated tests cover core paths; add load/security tests before production."
+    ],
+    "tradeoffs": [
+      "Prototype stores rate-limit counters in a process-local dict protected by a lock, correct only for a single instance; production running multiple instances behind a load balancer would need a shared, atomic counter store (e.g., Redis with INCR+EXPIRE or a Lua script) to keep limits consistent across nodes",
+      "Prototype trusts X-Forwarded-For only via a static TRUSTED_PROXIES allowlist read at startup; production would integrate with the actual reverse proxy/load balancer configuration and possibly mTLS or signed headers to harden against spoofing",
+      "Prototype uses fixed/sliding window counters for simplicity and predictable headers; production might adopt a token-bucket or leaky-bucket algorithm for smoother burst handling at the cost of slightly more complex state",
+      "Prototype exposes metrics via a simple JSON admin endpoint read from in-memory counters; production would export metrics to a time-series system (e.g., Prometheus) for alerting and long-term abuse trend analysis",
+      "Prototype allows runtime rule updates via SQLite-backed overrides polled/reloaded in-process; production would use a centralized config service or feature-flag system to push updates instantly to all instances",
+      "Prototype keeps a bounded in-memory log of recent 429 events for quick inspection; production would ship structured logs to a centralized logging/SIEM pipeline for durable abuse detection and forensics"
+    ],
+    "validation": "6/6 checks passed",
+    "validation_approach": [
+      "Static safety (first, before anything runs): an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle, import aliases resolved), imports outside the standard library, hard-coded secrets and modules that shadow the standard library; code with a high-severity finding is not executed.",
+      "Static: every generated .py file is compiled.",
+      "Dynamic: the generated unit + integration suite is executed in an isolated interpreter (python -I) in a subprocess, with a timeout and a credential-scrubbed environment.",
+      "Contract: an OpenAPI document must exist whenever the design exposes an API (existence is checked, not conformance).",
+      "Documentation: README/architecture docs must be present.",
+      "Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.",
+      "Human: a final acceptance gate reviews this report before the run is accepted.",
+      "Model output: LLM-authored code was accepted only after passing a sandbox compile+test gate (a rejected bundle gets one repair pass with the sandbox output); otherwise the verified template was used."
+    ],
+    "validation_checks": [
+      {
+        "name": "code compiles",
+        "passed": true,
+        "detail": "all files compiled"
+      },
+      {
+        "name": "tests pass",
+        "passed": true,
+        "detail": "Ran 35 tests in 0.002s \u2014 OK"
+      },
+      {
+        "name": "api contract present",
+        "passed": true,
+        "detail": "openapi.yaml found"
+      },
+      {
+        "name": "documentation present",
+        "passed": true,
+        "detail": "docs generated"
+      },
+      {
+        "name": "change set present",
+        "passed": true,
+        "detail": "7 file(s) changed; repository tests re-run with the change applied"
+      },
+      {
+        "name": "static safety scan",
+        "passed": true,
+        "detail": "no findings"
+      }
+    ],
+    "monitoring": {
+      "provider": "llm",
+      "tasks_completed": 16,
+      "retries": 0,
+      "repairs": 0,
+      "degradations": 0,
+      "parallel_levels": 4,
+      "reused_tasks": 12,
+      "human_gates_passed_before_summary": 2,
+      "llm_calls": 5,
+      "llm_tokens": 53698,
+      "llm_est_cost_usd": 0.4084,
+      "llm_fallbacks": []
+    },
+    "assumptions": [
+      "What technology stack and framework is the existing URL shortener built with (e.g., Node/Express, Python/Flask/FastAPI, Java/Spring)? -> assumed: Inspect the 'demo' repository to detect the stack automatically; assume Node.js/Express if unable to determine otherwise, and adapt implementation accordingly.",
+      "Is the API deployed as a single instance or horizontally scaled across multiple servers/containers? -> assumed: Assume single-instance deployment for simplicity; use an in-memory store, but structure the code to allow swapping in Redis later if needed.",
+      "Should rate limits differ by client type (anonymous IP-based vs authenticated API key/user), and are there existing authentication mechanisms to leverage? -> assumed: Apply a single rate limit tier based on client IP address if no authentication system is detected in the repository.",
+      "What specific endpoints need rate limiting - only URL creation, or also redirects/lookups and any other endpoints? -> assumed: Apply rate limiting to the URL creation endpoint(s) primarily, and apply a more lenient limit to redirect/lookup endpoints to prevent abuse without harming normal usage.",
+      "What are the desired rate limit thresholds (requests per time window)? -> assumed: Use a reasonable default such as 10 requests per minute for URL creation and 100 requests per minute for redirects, configurable via environment variables.",
+      "Is there an existing reverse proxy or load balancer in front of the API that sets headers like X-Forwarded-For? -> assumed: Assume no proxy is present initially; use the direct connection IP, but add support for trusting X-Forwarded-For if a proxy config is detected in the repo."
+    ],
+    "limitations": [
+      "Reasoning and code authoring were model-driven; no stage needed the deterministic fallback.",
+      "The design decisions under Rationale describe the model's target design. What is verified for the generated slice is: the endpoints marked 'yes' in the coverage table exist in the code, the code compiles, passes the static scan, and passes the model's own tests. Individual decisions (e.g. an async queue, a required header) are not checked against the code; a critic agent that does so is the next step. The API contract and README are synthesized from the design by the Repair agent when the model's bundle does not include them.",
+      "Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).",
+      "Human checkpoints are console-based in this prototype.",
+      "The validation sandbox is an isolated-mode subprocess with a timeout and a scrubbed environment, not a network-isolated container or separate OS user.",
+      "Change mode: the repository was only read; the proposal is the change set in this folder plus CHANGES.diff, validated on a throwaway copy of the repository with the change applied (its tests/ suite plus the new tests). The model sees a relevance-ranked subset of the repository (~60 KB); file deletions are not proposed."
+    ]
+  },
+  "events": [
+    {
+      "ts": 1790326378.735,
+      "kind": "agent",
+      "message": "interpreting requirement and identifying ambiguities",
+      "agent": "RequirementAnalyst"
+    },
+    {
+      "ts": 1790326400.101,
+      "kind": "analysis",
+      "message": "classified as brownfield (domain=url_shortener, confidence=0.75)",
+      "ambiguities": 6
+    },
+    {
+      "ts": 1790326400.101,
+      "kind": "agent",
+      "message": "kind=brownfield domain=url_shortener (6 ambiguities, 9 FRs)",
+      "agent": "RequirementAnalyst"
+    },
+    {
+      "ts": 1790326400.101,
+      "kind": "gate",
+      "message": "clarification: auto-approved (non-interactive mode)",
+      "approved": true
+    },
+    {
+      "ts": 1790326400.101,
+      "kind": "agent",
+      "message": "decomposing normalized problem into a task graph",
+      "agent": "TaskDecomposer"
+    },
+    {
+      "ts": 1790326419.96,
+      "kind": "decomposition",
+      "message": "planned 17 tasks across 12 dependency levels",
+      "tasks": [
+        "design-1",
+        "codebase-impact-1",
+        "code-config-1",
+        "code-storage-1",
+        "code-identify-1",
+        "code-core-1",
+        "code-middleware-1",
+        "code-response-1",
+        "code-apply-1",
+        "code-bypass-1",
+        "tests-unit-1",
+        "tests-integration-1",
+        "tests-load-1",
+        "docs-api-1",
+        "docs-ops-1",
+        "validate-1",
+        "summary-1"
+      ]
+    },
+    {
+      "ts": 1790326419.96,
+      "kind": "agent",
+      "message": "17 tasks, 12 levels (design-1, codebase-impact-1, code-config-1|code-identify-1|code-storage-1, code-core-1|docs-ops-1, code-middleware-1|tests-unit-1, code-response-1, code-apply-1, code-bypass-1|docs-api-1, tests-integration-1, tests-load-1, validate-1, summary-1)",
+      "agent": "TaskDecomposer"
+    },
+    {
+      "ts": 1790326419.96,
+      "kind": "gate",
+      "message": "plan: auto-approved (non-interactive mode)",
+      "approved": true
+    },
+    {
+      "ts": 1790326419.96,
+      "kind": "decision",
+      "message": "Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default",
+      "agent": "Architect",
+      "action": "design(durable)",
+      "proceed": true
+    },
+    {
+      "ts": 1790326419.96,
+      "kind": "agent",
+      "message": "decided: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default",
+      "agent": "Architect"
+    },
+    {
+      "ts": 1790326459.931,
+      "kind": "design",
+      "message": "9 components, 5 endpoints, 10 decisions"
+    },
+    {
+      "ts": 1790326459.931,
+      "kind": "agent",
+      "message": "designed 9 components, 5 API endpoints",
+      "agent": "Architect"
+    },
+    {
+      "ts": 1790326459.931,
+      "kind": "task",
+      "message": "design-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790326459.931,
+      "kind": "decision",
+      "message": "CodebaseAnalyst: scan-repo - a real repository path exists \u2192 scan it for candidate touch points",
+      "agent": "CodebaseAnalyst",
+      "action": "scan-repo",
+      "proceed": true
+    },
+    {
+      "ts": 1790326459.931,
+      "kind": "agent",
+      "message": "decided: scan-repo - a real repository path exists \u2192 scan it for candidate touch points",
+      "agent": "CodebaseAnalyst"
+    },
+    {
+      "ts": 1790326459.934,
+      "kind": "impact",
+      "message": "repository snapshot: 15 files (read-only); this run proposes a change set against it"
+    },
+    {
+      "ts": 1790326459.935,
+      "kind": "impact",
+      "message": "identified 20 impacted areas"
+    },
+    {
+      "ts": 1790326459.935,
+      "kind": "agent",
+      "message": "identified 20 impacted areas",
+      "agent": "CodebaseAnalyst"
+    },
+    {
+      "ts": 1790326459.935,
+      "kind": "task",
+      "message": "codebase-impact-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790326459.935,
+      "kind": "parallel",
+      "message": "level 2: running 3 tasks concurrently",
+      "tasks": [
+        "code-config-1",
+        "code-identify-1",
+        "code-storage-1"
+      ]
+    },
+    {
+      "ts": 1790326459.935,
+      "kind": "decision",
+      "message": "CodeGenerator: propose-change - an existing repository was given \u2192 propose a change set against it (only new/changed files, validated against the repo's own tests)",
+      "agent": "CodeGenerator",
+      "action": "propose-change",
+      "proceed": true
+    },
+    {
+      "ts": 1790326459.935,
+      "kind": "agent",
+      "message": "decided: propose-change - an existing repository was given \u2192 propose a change set against it (only new/changed files, validated against the repo's own tests)",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.168,
+      "kind": "change",
+      "message": "proposed 7 changed file(s)",
+      "files": [
+        "README.md (modified, +27/-2)",
+        "docs/ARCHITECTURE.md (modified, +24/-0)",
+        "openapi.yaml (modified, +40/-1)",
+        "tests/test_ratelimit.py (new, +199/-0)",
+        "url_shortener/api.py (modified, +136/-26)",
+        "url_shortener/config.py (modified, +19/-0)",
+        "url_shortener/ratelimit.py (new, +196/-0)"
+      ]
+    },
+    {
+      "ts": 1790327090.168,
+      "kind": "agent",
+      "message": "proposed change set: 7 file(s) \u2014 README.md, docs/ARCHITECTURE.md, openapi.yaml, tests/test_ratelimit.py, url_shortener/api.py, url_shortener/config.py, url_shortener/ratelimit.py",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.168,
+      "kind": "task",
+      "message": "code-config-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.168,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-identify-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.168,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-identify-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.169,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-identify-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-identify-1"
+    },
+    {
+      "ts": 1790327090.169,
+      "kind": "task",
+      "message": "code-identify-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.169,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-storage-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.169,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-storage-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.169,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-storage-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-storage-1"
+    },
+    {
+      "ts": 1790327090.169,
+      "kind": "task",
+      "message": "code-storage-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.17,
+      "kind": "parallel",
+      "message": "level 3: running 2 tasks concurrently",
+      "tasks": [
+        "code-core-1",
+        "docs-ops-1"
+      ]
+    },
+    {
+      "ts": 1790327090.171,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-core-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.171,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-core-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.171,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-core-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-core-1"
+    },
+    {
+      "ts": 1790327090.171,
+      "kind": "task",
+      "message": "code-core-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.172,
+      "kind": "decision",
+      "message": "DocGenerator: reuse - change mode: documentation changes are part of the proposed change set; 'docs-ops-1' is covered",
+      "agent": "DocGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.172,
+      "kind": "agent",
+      "message": "decided: reuse - change mode: documentation changes are part of the proposed change set; 'docs-ops-1' is covered",
+      "agent": "DocGenerator"
+    },
+    {
+      "ts": 1790327090.172,
+      "kind": "skip",
+      "message": "DocGenerator chose to skip: change mode: documentation changes are part of the proposed change set; 'docs-ops-1' is covered",
+      "agent": "DocGenerator",
+      "task": "docs-ops-1"
+    },
+    {
+      "ts": 1790327090.172,
+      "kind": "task",
+      "message": "docs-ops-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.172,
+      "kind": "parallel",
+      "message": "level 4: running 2 tasks concurrently",
+      "tasks": [
+        "code-middleware-1",
+        "tests-unit-1"
+      ]
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-middleware-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-middleware-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-middleware-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-middleware-1"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "task",
+      "message": "code-middleware-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "decision",
+      "message": "TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-unit-1' is covered",
+      "agent": "TestGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "agent",
+      "message": "decided: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-unit-1' is covered",
+      "agent": "TestGenerator"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "skip",
+      "message": "TestGenerator chose to skip: change mode: tests are part of the proposed change set and the repository's own suite; 'tests-unit-1' is covered",
+      "agent": "TestGenerator",
+      "task": "tests-unit-1"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "task",
+      "message": "tests-unit-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-response-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-response-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-response-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-response-1"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "task",
+      "message": "code-response-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-apply-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-apply-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-apply-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-apply-1"
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "task",
+      "message": "code-apply-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.173,
+      "kind": "parallel",
+      "message": "level 7: running 2 tasks concurrently",
+      "tasks": [
+        "code-bypass-1",
+        "docs-api-1"
+      ]
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "decision",
+      "message": "CodeGenerator: reuse - code already generated from the current design; 'code-bypass-1' is covered by it",
+      "agent": "CodeGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "agent",
+      "message": "decided: reuse - code already generated from the current design; 'code-bypass-1' is covered by it",
+      "agent": "CodeGenerator"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "skip",
+      "message": "CodeGenerator chose to skip: code already generated from the current design; 'code-bypass-1' is covered by it",
+      "agent": "CodeGenerator",
+      "task": "code-bypass-1"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "task",
+      "message": "code-bypass-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "decision",
+      "message": "DocGenerator: reuse - change mode: documentation changes are part of the proposed change set; 'docs-api-1' is covered",
+      "agent": "DocGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "agent",
+      "message": "decided: reuse - change mode: documentation changes are part of the proposed change set; 'docs-api-1' is covered",
+      "agent": "DocGenerator"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "skip",
+      "message": "DocGenerator chose to skip: change mode: documentation changes are part of the proposed change set; 'docs-api-1' is covered",
+      "agent": "DocGenerator",
+      "task": "docs-api-1"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "task",
+      "message": "docs-api-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "decision",
+      "message": "TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-integration-1' is covered",
+      "agent": "TestGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "agent",
+      "message": "decided: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-integration-1' is covered",
+      "agent": "TestGenerator"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "skip",
+      "message": "TestGenerator chose to skip: change mode: tests are part of the proposed change set and the repository's own suite; 'tests-integration-1' is covered",
+      "agent": "TestGenerator",
+      "task": "tests-integration-1"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "task",
+      "message": "tests-integration-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "decision",
+      "message": "TestGenerator: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-load-1' is covered",
+      "agent": "TestGenerator",
+      "action": "reuse",
+      "proceed": false
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "agent",
+      "message": "decided: reuse - change mode: tests are part of the proposed change set and the repository's own suite; 'tests-load-1' is covered",
+      "agent": "TestGenerator"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "skip",
+      "message": "TestGenerator chose to skip: change mode: tests are part of the proposed change set and the repository's own suite; 'tests-load-1' is covered",
+      "agent": "TestGenerator",
+      "task": "tests-load-1"
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "task",
+      "message": "tests-load-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "decision",
+      "message": "Validator: validate - compile code, run tests, check contract & docs",
+      "agent": "Validator",
+      "action": "validate",
+      "proceed": true
+    },
+    {
+      "ts": 1790327090.174,
+      "kind": "agent",
+      "message": "decided: validate - compile code, run tests, check contract & docs",
+      "agent": "Validator"
+    },
+    {
+      "ts": 1790327090.246,
+      "kind": "validation",
+      "message": "6/6 checks passed",
+      "passed": true,
+      "checks": []
+    },
+    {
+      "ts": 1790327090.246,
+      "kind": "agent",
+      "message": "6/6 checks passed",
+      "agent": "Validator"
+    },
+    {
+      "ts": 1790327090.246,
+      "kind": "task",
+      "message": "validate-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.246,
+      "kind": "decision",
+      "message": "SummaryWriter: summarize - consolidate the run into the final summary",
+      "agent": "SummaryWriter",
+      "action": "summarize",
+      "proceed": true
+    },
+    {
+      "ts": 1790327090.246,
+      "kind": "agent",
+      "message": "decided: summarize - consolidate the run into the final summary",
+      "agent": "SummaryWriter"
+    },
+    {
+      "ts": 1790327090.247,
+      "kind": "summary",
+      "message": "engineering summary written"
+    },
+    {
+      "ts": 1790327090.247,
+      "kind": "agent",
+      "message": "engineering summary written",
+      "agent": "SummaryWriter"
+    },
+    {
+      "ts": 1790327090.247,
+      "kind": "task",
+      "message": "summary-1 ok",
+      "attempt": 1
+    },
+    {
+      "ts": 1790327090.247,
+      "kind": "gate",
+      "message": "acceptance: auto-approved (non-interactive mode)",
+      "approved": true
+    }
+  ],
+  "metrics": {
+    "run": {
+      "duration_s": 711.513,
+      "tasks_ok": 17,
+      "retries": 0,
+      "repairs": 0,
+      "degradations": 0,
+      "parallel_levels": 4,
+      "reused": 12,
+      "decisions": 17,
+      "gates": 3,
+      "halted": false,
+      "artifacts": 9,
+      "validation": "6/6 checks passed",
+      "validation_passed": true
+    },
+    "llm": {
+      "calls": [
+        {
+          "stage": "analyze",
+          "model": "claude-sonnet-5",
+          "prompt_tokens": 221,
+          "completion_tokens": 2104,
+          "latency_s": 21.365,
+          "fallback": false,
+          "error": "",
+          "event": false
+        },
+        {
+          "stage": "decompose",
+          "model": "claude-sonnet-5",
+          "prompt_tokens": 313,
+          "completion_tokens": 2204,
+          "latency_s": 19.858,
+          "fallback": false,
+          "error": "",
+          "event": false
+        },
+        {
+          "stage": "design",
+          "model": "claude-sonnet-5",
+          "prompt_tokens": 1855,
+          "completion_tokens": 3914,
+          "latency_s": 39.969,
+          "fallback": false,
+          "error": "",
+          "event": false
+        },
+        {
+          "stage": "codegen",
+          "model": "claude-sonnet-5",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "latency_s": 204.424,
+          "fallback": false,
+          "error": "peer closed connection without sending complete message body (incomplete chunked read)",
+          "event": false
+        },
+        {
+          "stage": "codegen",
+          "model": "claude-sonnet-5",
+          "prompt_tokens": 13685,
+          "completion_tokens": 29402,
+          "latency_s": 425.729,
+          "fallback": false,
+          "error": "",
+          "event": false
+        }
+      ],
+      "api_calls": 5,
+      "total_tokens": 53698,
+      "retries": 1,
+      "fallbacks": 0,
+      "est_cost_usd": 0.408388,
+      "pricing": {
+        "source": "published list price table (2026-09)",
+        "per_mtok_usd": {
+          "claude-sonnet-5": [
+            2.0,
+            10.0
+          ]
+        }
+      }
+    }
+  },
+  "output_dir": "runs/20260925-085258-734/artifacts"
+}

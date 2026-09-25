@@ -71,6 +71,10 @@ class Orchestrator:
     ) -> None:
         self.config = config or OrchestratorConfig()
         self.provider = provider or get_provider(self.config.provider)
+        # Model attempts, retries, repair passes and fallbacks happen inside the provider;
+        # surface them on the console as they happen (a long step must never look frozen).
+        if hasattr(self.provider, "on_event"):
+            self.provider.on_event = self._say
         self.gate = gate or (ConsoleApproval() if self.config.interactive else AutoApprove())
         self._fault_budget = dict(self.config.inject_fault)
         self._fault_lock = threading.Lock()

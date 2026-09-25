@@ -8,8 +8,10 @@ producing production-shaped code, an API contract, tests, docs, and a structured
 engineering summary, all under **controlled autonomy** (agents act, humans approve).
 
 > Built for the mandatory use case: *"Build a scalable URL shortener service with APIs,
-> persistence, and analytics."* — and it also handles greenfield, brownfield, and
-> ambiguous requirements generally.
+> persistence, and analytics."* — and it also handles greenfield work, brownfield changes
+> to an existing repository (enhancements, bug fixes, refactors, test and documentation
+> improvements — proposed as a validated change set, never applied), and ambiguous
+> requirements.
 
 - **Model-driven by design** — a live LLM (Claude / OpenAI / Azure / any OpenAI-compatible
   endpoint) analyses the requirement, plans the task graph, designs the architecture and
@@ -49,13 +51,14 @@ if they don't). The API contract and README are then synthesized from the model'
 by the Repair agent if the model's bundle left them out. The result lands in `runs/<run-id>/`, ending with
 `artifacts/ENGINEERING_SUMMARY.md`. **No key is committed anywhere in this repository.**
 
-**No key to hand? The evidence is already recorded.** Three live runs, produced by the
+**No key to hand? The evidence is already recorded.** Four live runs, produced by the
 final code, are checked in exactly as they came out of `runs/`:
 
 | What you want to see | Where |
 | --- | --- |
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
+| **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
 | The hardest case: a **Go** target — the design records Go, the validated slice is Python (stated as a limitation), 15 model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
 | The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
 | How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
@@ -68,9 +71,9 @@ with the deterministic engine in place of the model (this is also what CI runs):
 
 ```bash
 export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
-python3 -m unittest discover -s tests                   # 66 tests, OK
+python3 -m unittest discover -s tests                   # 72 tests, OK
 python3 -m agentic_sdlc --file examples/greenfield.txt  # plan, build, validate, report — offline
-python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 3 recorded live runs
+python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 4 recorded live runs
 ```
 
 The fallback's output for the mandatory requirement is committed as [`demo/`](demo/) — a
@@ -274,14 +277,15 @@ for a model with no known price the breaker assumes the most expensive rate in t
 if tripped, remaining stages degrade to the deterministic engine and the record says so.
 
 Keys are read **only** from the environment and are never written to disk or to
-`result.json`. Three recorded live-model runs are checked in under
-[`examples/llm-run*/`](examples/) (URL shortener, inventory service, Go card validator) so the
+`result.json`. Four recorded live-model runs are checked in under
+[`examples/llm-run*/`](examples/) (URL shortener, inventory service, Go card validator, and a
+brownfield change set against `demo/`) so the
 model-driven path can be inspected without a key — each `result.json` carries the real
 per-stage tokens, latency, cost, retries and fallback counts. To refresh one after your own
 run: `python scripts/snapshot_run.py --name llm-run` (copies the latest run and scrubs
 anything key-shaped).
 
-**CLI flags:** `--file <path>`, `--repo <path>` (brownfield scan), `--interactive`,
+**CLI flags:** `--file <path>`, `--repo <path>` (brownfield: propose a change set against this repository), `--interactive`,
 `--provider auto|deterministic|claude|anthropic|openai|llm`, `--inject-fault <category[:N]>`,
 `--sequential` (disable in-level concurrency), `--output-root <dir>`, `--quiet`, `--json`
 (machine-readable result on stdout, logs suppressed). Exit status is 0 only for a validated,
@@ -300,15 +304,28 @@ Every run writes to an **isolated, timestamped workspace**: `runs/<run-id>/artif
 Override the root with `--output-root`. Nothing is written anywhere else.
 
 - **Greenfield** — the whole new project lands in the workspace, runnable as-is.
-- **Brownfield** — `--repo <path>` is **read-only**: it is scanned for impact, never modified.
-  The proposed code still goes to the workspace, so a human reviews it before anything
-  touches existing code. The production extension is "apply to a branch → run the existing
-  suite → open a PR", behind the same acceptance gate.
+- **Brownfield (change mode)** — `--repo <path>` is **read-only**. The CodebaseAnalyst
+  snapshots it and ranks its files by relevance to the requirement; the model receives the
+  relevant files and returns **only the files to add or change** — code, tests or docs
+  (in a plain `<<<FILE path>>> … <<<END FILE>>>` format, so source travels verbatim with
+  nothing to escape),
+  whatever the requirement asks for (enhancement, bug fix, refactor, test or doc
+  improvement). The change is validated on a **throwaway copy of the repository with the
+  change applied**: static scan of the changed files, compile, then the repository's own
+  test suite plus the new tests — a regression fails the gate (one repair pass, then the
+  deterministic engine). The workspace receives the changed files and `CHANGES.diff`; the
+  repository is never written. The production extension is "apply `CHANGES.diff` to a
+  branch → CI → open a PR", behind the same acceptance gate.
+
+  ```bash
+  python3 -m agentic_sdlc --provider claude --repo demo --file examples/brownfield.txt
+  python3 -m agentic_sdlc --provider claude --repo demo "Fix the bug where …"      # any change
+  ```
 
 This is the same model as a CI job workspace or an artifact store: the outcome is a
 *reviewable proposal*, not a change already applied. `runs/` is git-ignored — the
 **committed evidence** is `demo/` (the deterministic output for the mandatory requirement)
-and `examples/llm-run*/` (three recorded live-model runs, copied from `runs/` by
+and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 `scripts/snapshot_run.py`, which scrubs anything key-shaped).
 
 ---
@@ -442,11 +459,15 @@ the **greenfield**, **brownfield**, and **ambiguous** cases, plus the error-reco
 Highlights:
 
 - **Greenfield** → full URL-shortener package, `5/5` checks pass.
-- **Brownfield** ("Add rate limiting to the existing URL shortener…") → an extra `impact`
-  task is injected *before* `code`; `--repo <path>` ranks the repository's files by
-  relevance to the change; the output contains the change itself — a per-client token-bucket
-  limiter (`url_shortener/ratelimit.py`), HTTP 429 on link creation, the contract updated,
-  and its tests — and the evaluator fails the scenario if the limiter is missing.
+- **Brownfield** ("Add rate limiting to the existing URL shortener…", `--repo demo`) → an
+  extra `impact` task runs *before* `code`; the run proposes a **change set**, not a new
+  project: `url_shortener/ratelimit.py` (new), `url_shortener/server.py` and `openapi.yaml`
+  (modified), `tests/test_ratelimit.py` (new), plus `CHANGES.diff`. Validation runs demo's
+  20 existing tests plus the 2 new ones on a copy of `demo/` with the change applied
+  (6/6 checks); `demo/` itself is untouched. The evaluator fails the scenario if the
+  limiter is missing or if the output regenerates the whole project. Offline, only this
+  rate-limit change is authored; any other change against a repository needs the live
+  model, and the offline run says so (`change set present: FAIL`) instead of faking it.
 - **Ambiguous** ("Make the app faster.") → classified `ambiguous` (low confidence); every open
   question gets a recorded default assumption shown at the clarification gate; validation
   first fails 4/5 (no contract), the Repair agent adds it, re-validation passes 5/5. The
@@ -476,6 +497,7 @@ AgenticSoftware/
 │  ├─ greenfield.txt / brownfield.txt / ambiguous.txt
 │  ├─ llm-run/                        ★ Recorded live-model run: URL shortener (result.json + artifacts)
 │  ├─ llm-run-inventory/              ★ Recorded live-model run: inventory service
+│  ├─ llm-run-brownfield/             ★ Recorded live-model run: change set against demo/ (CHANGES.diff)
 │  ├─ llm-run-go-card-validator/      ★ Recorded live-model run: non-Python target (Go) — design vs validated Python slice
 │  └─ README.md
 ├─ scripts/
@@ -488,7 +510,7 @@ AgenticSoftware/
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
 │  ├─ cli.py                          Argument parsing + human-readable report
 │  ├─ models.py                       Typed contracts shared by all stages (incl. TaskGraph DAG)
-│  ├─ prompts/                        Stage system prompts (analyze/decompose/design/codegen/codegen_repair .md) — versioned context
+│  ├─ prompts/                        Stage system prompts (analyze/decompose/design/codegen/codegen_repair/codegen_change .md) — versioned context
 │  ├─ llm/
 │  │  ├─ base.py                      ReasoningProvider interface (the swappable brain)
 │  │  ├─ client.py                    LLM clients (Claude/OpenAI/Azure) + usage metrics
@@ -504,7 +526,7 @@ AgenticSoftware/
 │  │  ├─ requirement_analyst.py       Understand & normalize; record assumptions
 │  │  ├─ task_decomposer.py           Build & validate the task DAG
 │  │  ├─ architect.py                 Design + decides persistence default from NFRs
-│  │  ├─ codebase_analyst.py          Brownfield impact; decides scan-repo vs design-only
+│  │  ├─ codebase_analyst.py          Brownfield impact; snapshots the repo (read-only) → change mode
 │  │  ├─ generators.py                Code / Test / Doc generation agents
 │  │  ├─ validator.py                 Compile + run tests + contract/doc checks + risks
 │  │  ├─ repair.py                    Feedback-loop agent: fixes repairable findings
@@ -519,6 +541,7 @@ AgenticSoftware/
 │  │  └─ __init__.py
 │  └─ tools/
 │     ├─ filesystem.py                ArtifactStore — sandboxed writes (path-traversal guard)
+│     ├─ repo.py                      Brownfield: read-only repo snapshot, relevance ranking, overlay, unified diff
 │     ├─ code_runner.py               CodeRunner — in-memory compile + isolated (python -I) unittest subprocess, credential-scrubbed env
 │     ├─ static_check.py               AST safety scan: dangerous calls, non-stdlib imports, hard-coded secrets
 │     └─ __init__.py                  ToolBox bundle handed to agents
@@ -527,6 +550,7 @@ AgenticSoftware/
    ├─ test_provider.py                Classification & plan-shape correctness
    ├─ test_tools.py                   Sandbox guard, compilation detection, static safety scan
    ├─ test_llm_provider.py            LLM path with a fake client: parsing, fallback, sandbox gate, repair pass, pricing, hardening
+   ├─ test_change_mode.py             Brownfield change sets: accept, repair pass, fallback, repo never written
    └─ test_orchestrator.py            Full runs, recovery, degrade, human-halt, compile-failure halt, scan-before-execute
 ```
 
@@ -536,7 +560,7 @@ AgenticSoftware/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 66 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 72 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
    **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
@@ -555,7 +579,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 66 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 72 tests ... OK
 ```
 
 4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
@@ -590,7 +614,7 @@ risks derived from the produced code → human acceptance gate.
 
 | Failure | Behaviour | Where |
 | --- | --- | --- |
-| Model call errors / times out / returns bad JSON | bounded retries (failed attempts' tokens are still counted), then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm` | `llm_provider._ask_json`, `_with_fallback` |
+| Model call errors / times out / drops the connection / returns bad JSON | bounded retries (failed attempts' tokens are still counted), each attempt, retry, repair pass and fallback **printed on the console as it happens** (`[LLM] …` lines), then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm`. Change sets use a delimiter format instead of JSON, so whole source files never need escaping | `llm_provider._ask`, `_with_fallback`, `_parse_file_blocks` |
 | Model-authored code fails the scan, compile or its own tests | rejected in a throwaway sandbox; the failure output is fed back to the model for **one repair pass** (recorded as a `codegen` retry event — `metrics.llm.retries`); a second rejection uses the verified template, recorded as a `codegen` fallback | `llm_provider._ensure_bundle`, `_llm_repair_files` |
 | Model plan is invalid (unknown category, missing code/tests/validate/summary, cycle) | rejected; deterministic plan used. A valid plan is normalized so every validate task depends on all the work it reports on, and summary on validation | `llm_provider._enforce_plan_invariants`, `TaskGraph.validate_acyclic` |
 | Generated code does not compile | the Validator raises; the retry re-validates (a failed report is never reused) and the run **halts** for a human with the partial record saved | `ValidatorAgent.act` |
@@ -710,8 +734,12 @@ Not enforced in this prototype (documented, would be required for production):
 - The model's own tests are the behavioural evidence; they cover main paths, not edge cases
   (e.g. the recorded shortener accepts a TTL but its cache path does not re-check expiry).
 - Human checkpoints are **console-based** in this prototype (no web UI).
-- The brownfield repo scan ranks files by term overlap with the requirement — a heuristic
-  for candidate touch points, not a static-analysis/impact engine.
+- Brownfield change mode: the repo scan ranks files by term overlap with the requirement (a
+  heuristic, not a static-analysis/impact engine); the model sees a relevance-ranked subset
+  of the repository (~60 KB), so a change spanning a large codebase may miss context;
+  file deletions are not proposed; the overlay runs the repository's `unittest` suite under
+  `tests/` (other runners — pytest, go test — need a runner adapter). Offline, only the
+  rate-limit change on the demo layout is authored.
 
 ---
 
@@ -723,7 +751,8 @@ Not enforced in this prototype (documented, would be required for production):
 | Normalize into an engineering problem | `AnalysisResult.normalized_problem` |
 | Task decomposition + dependencies | `agents/task_decomposer.py`, `models.TaskGraph` |
 | Execution sequence (DAG levels) | `TaskGraph.topological_levels`, `orchestrator._execute` |
-| Codebase reasoning (brownfield) | `agents/codebase_analyst.py` |
+| Codebase reasoning (brownfield) | `agents/codebase_analyst.py`, `tools/repo.py` (snapshot, relevance ranking, overlay, diff) |
+| Brownfield changes (enhancement / bug fix / refactor / tests / docs) | change mode: `CodeGenerator._propose_change`, `LLMProvider.generate_change` + `prompts/codegen_change.md`, overlay validation in `ValidatorAgent` |
 | Multi-step orchestration + cross-step coordination | `orchestrator.py` + `Blackboard` |
 | Error handling & recovery | `orchestrator._run_task` (retry / degrade / halt) + `_repair_loop` (validation feedback) |
 | Agent autonomy (perceive → decide → act) | `agents/base.py`, `decision` events per agent |
@@ -735,7 +764,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
-| Evidence of the model-driven path | `examples/llm-run*/result.json` — three domains (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
+| Evidence of the model-driven path | `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
 | Evaluation (quality / adherence / tool correctness / efficiency) | `scripts/evaluate.py` (CI step), `tests/test_tools.py` |
@@ -753,7 +782,7 @@ Not enforced in this prototype (documented, would be required for production):
 - **New capability:** add an `Agent`, one entry in `agents.DAG_AGENTS`, and a task in the
   decomposer with the matching `category`.
 - **Prompts are files, not code:** each stage's system prompt lives in
-  `src/agentic_sdlc/prompts/<stage>.md` (analyze, decompose, design, codegen, codegen_repair). Edit and diff
+  `src/agentic_sdlc/prompts/<stage>.md` (analyze, decompose, design, codegen, codegen_repair, codegen_change). Edit and diff
   them like any versioned context; point `AGENTIC_PROMPTS_DIR` at a folder to A/B a prompt set
   without touching Python.
 - **Model temperature:** `AGENTIC_LLM_TEMPERATURE` sets it explicitly (OpenAI-compatible

@@ -118,6 +118,13 @@ design, impact ──► code ──► tests ──┐
                     docs ───────────┴─► validate ──► summary
 ```
 
+With `--repo`, the run is in **change mode**: the CodebaseAnalyst snapshots the repository
+(read-only) onto the blackboard; the CodeGenerator asks the provider for a *change set*
+(only new/changed files — code, tests or docs) instead of a project; the tests/docs agents
+defer to it; the Validator lays the change over a throwaway copy of the repository and runs
+the scan, compile, and the repository's own tests plus the new ones; the output is the
+changed files plus `CHANGES.diff`, and the repository is never written.
+
 ## 5. Key technical decisions
 
 | Decision | Rationale |

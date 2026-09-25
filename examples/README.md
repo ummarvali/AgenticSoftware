@@ -1,6 +1,6 @@
 # Example Scenarios
 
-The primary mode is the **live model** — three recorded runs are described in
+The primary mode is the **live model** — four recorded runs are described in
 [§4](#4-live-model--examplesllm-run-recorded). The three requirement files below exercise
 the three input classes (greenfield, brownfield, ambiguous); the commands shown run them
 on the offline fallback so they work without a key (add `--provider claude` to run them live).
@@ -11,7 +11,7 @@ Run any example (from the project root):
 ```powershell
 $env:PYTHONPATH = "src"
 python -m agentic_sdlc --file examples/greenfield.txt
-python -m agentic_sdlc --file examples/brownfield.txt --repo .
+python -m agentic_sdlc --file examples/brownfield.txt --repo demo
 python -m agentic_sdlc --file examples/ambiguous.txt
 ```
 
@@ -43,13 +43,17 @@ Validation : 5/5 checks passed (PASS)
 - **Classification:** `brownfield` (triggered by "existing")
 - **Task graph:** adds an `impact` task that `code` depends on —
   `(design ∥ impact) → code → tests → …`
-- **Codebase impact:** identifies affected modules and the new rate-limiter concern
-  (see the *Codebase Impact* section in `ENGINEERING_SUMMARY.md`). Pass `--repo <path>`
-  (e.g. `--repo demo`) to rank that repository's files by relevance to the change.
-- **The change itself:** a per-client token-bucket limiter (`url_shortener/ratelimit.py`)
-  wired into the server, HTTP 429 on `POST /api/shorten`, the contract updated, and
-  `tests/test_ratelimit.py` — 17 artifacts vs 15 for greenfield.
-- **Validation:** `5/5 checks passed` (22 generated tests)
+- **Codebase impact:** snapshots `demo/` (read-only), ranks its files by relevance, and lists
+  the candidate touch points (the *Codebase Impact* section in `ENGINEERING_SUMMARY.md`).
+- **The change set** (change mode — not a regenerated project): `url_shortener/ratelimit.py`
+  (new), `url_shortener/server.py` and `openapi.yaml` (modified), `tests/test_ratelimit.py`
+  (new), and `CHANGES.diff`; the summary has a *Proposed change set* table with +/- lines.
+- **Validation:** `6/6 checks passed` — on a copy of `demo/` with the change applied, the 20
+  existing tests plus the 2 new ones pass (22); `change set present` is the sixth check.
+  `demo/` is never modified.
+- **Any other change** (bug fix, refactor, tests, docs): run with `--provider claude`; the
+  model gets the relevant files and returns only the changed ones. Offline, the engine
+  reports `change set present: FAIL` rather than inventing a change.
 
 ## 3. Ambiguous — `examples/ambiguous.txt`
 
@@ -69,13 +73,14 @@ Validation : 5/5 checks passed (PASS)
 
 ## 4. Live model — `examples/llm-run*/` (recorded)
 
-Three runs of the same pipeline driven by a real model (`--provider claude`), checked in as
+Four runs of the same pipeline driven by a real model (`--provider claude`), checked in as
 **snapshots of actual runs** so the model-driven path can be inspected without any API key:
 
 | Folder | Requirement | What it demonstrates |
 | --- | --- | --- |
 | `llm-run/` | the mandatory URL shortener | model-authored, SQLite-backed service with its own tests; design↔implementation coverage table |
 | `llm-run-inventory/` | inventory service with low-stock alerts | a different domain through the same agents, gates and validator; the coverage table shows 14/15 designed endpoints served (the design-only one, `/openapi.json`, is stated as a limitation) |
+| `llm-run-brownfield/` | "Add rate limiting to the existing URL shortener API" with `--repo demo` | **change mode**: the model returns only the changed files; `CHANGES.diff` is the reviewable patch; demo's existing tests plus the new ones pass on a copy of `demo/` with the change applied; `demo/` is untouched |
 | `llm-run-go-card-validator/` | a **Go** microservice validating card transactions | non-Python target: the design records Go, the validated slice is Python (stated as a limitation), with 15 model-written tests passing in the sandbox |
 
 In each folder:

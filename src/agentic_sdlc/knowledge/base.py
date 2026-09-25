@@ -46,6 +46,11 @@ class KnowledgePack(abc.ABC):
     def docs(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
         ...
 
+    def change(self, analysis: AnalysisResult, repo_files: dict[str, str]) -> tuple[list[Artifact], str]:
+        """Brownfield change set against an existing repository. Offline packs author
+        only changes they know exactly; anything else needs the live model."""
+        return [], ""
+
     # Optional hooks a pack MAY override to enrich the shared analysis. Defaults
     # keep simple packs terse.
     def functional_requirements(self) -> list[str]:

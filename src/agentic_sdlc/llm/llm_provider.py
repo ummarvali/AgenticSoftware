@@ -128,6 +128,28 @@ def _coerce_json(text: str) -> dict:
     raise ValueError("no JSON object found")
 
 
+_FILE_BLOCK = re.compile(r"^<<<FILE (?P<path>[^>\n]+)>>>\n(?P<body>.*?)^<<<END FILE>>>[ \t]*$",
+                         re.M | re.S)
+_SUMMARY_BLOCK = re.compile(r"^<<<SUMMARY>>>\n(?P<body>.*?)^<<<END SUMMARY>>>", re.M | re.S)
+
+
+def _parse_file_blocks(text: str) -> dict:
+    """Parse the delimiter format used for change sets::
+
+        <<<FILE relative/path.py>>>
+        ...verbatim file content...
+        <<<END FILE>>>
+
+    Source code travels verbatim — no JSON escaping for the model to get wrong."""
+
+    files = [{"path": m.group("path").strip(), "content": m.group("body")}
+             for m in _FILE_BLOCK.finditer(text.replace("\r\n", "\n"))]
+    if not files:
+        raise ValueError("no <<<FILE path>>> blocks found")
+    summary = _SUMMARY_BLOCK.search(text)
+    return {"files": files, "summary": summary.group("body").strip() if summary else ""}
+
+
 def _enforce_plan_invariants(tasks: list[Task]) -> None:
     """Make a model-authored plan safe to execute, or reject it.
 
@@ -161,6 +183,9 @@ def _enforce_plan_invariants(tasks: list[Task]) -> None:
                         and u.id not in d.depends_on and d.id not in ancestors(u.id)):
                     d.depends_on.append(u.id)
 
+    # impact analysis reasons from the design; code must see the impact analysis
+    link([t for t in tasks if t.category == "codebase_impact"], {"design"})
+    link([t for t in tasks if t.category in ("code", "tests", "docs")], {"codebase_impact"})
     link([t for t in tasks if t.category == "validate"],
          {"design", "codebase_impact", "code", "tests", "docs"})
     link([t for t in tasks if t.category == "summary"], {"validate"})
@@ -208,11 +233,18 @@ class LLMProvider(ReasoningProvider):
             os.environ.get("AGENTIC_LLM_MAX_CALLS", "200"))
         self._max_cost_usd = max_cost_usd if max_cost_usd is not None else float(
             os.environ.get("AGENTIC_LLM_MAX_COST_USD", "10.00"))
+        # Console channel set by the orchestrator (log-only): attempts, retries, repair
+        # passes and fallbacks are printed as they happen.
+        self.on_event: Callable[[str], None] | None = None
         # code/docs generators may run concurrently in one DAG level; the model must
         # author the project exactly once, so the bundle is built under a lock.
         self._bundle_lock = threading.Lock()
 
     # -- LLM call with retries + metrics ---------------------------------- #
+
+    def _say(self, message: str) -> None:
+        if self.on_event:
+            self.on_event(f"[LLM] {message}")
 
     def _budget_check(self, stage: str) -> None:
         calls = len(self.metrics.calls)
@@ -223,24 +255,31 @@ class LLMProvider(ReasoningProvider):
             raise BudgetExceeded(f"{stage}: LLM cost budget exhausted (~${cost:.4f} >= ${self._max_cost_usd:.2f})")
 
     def _ask_json(self, stage: str, system: str, user: str) -> dict[str, Any]:
+        return self._ask(stage, system, user, _coerce_json, json_mode=True, fmt="JSON")
+
+    def _ask(self, stage: str, system: str, user: str, parse: Callable[[str], dict],
+             *, json_mode: bool, fmt: str) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
             self._budget_check(stage)          # every attempt, not just the first
             start = time.time()
             resp = None
+            self._say(f"{stage}: calling the model (attempt {attempt}/{self._max_retries})")
             try:
-                resp = self._client.complete(system, user, json_mode=True,
+                resp = self._client.complete(system, user, json_mode=json_mode,
                                              timeout=_TIMEOUTS.get(stage, self._timeout),
                                              max_tokens=_MAX_TOKENS.get(stage, 4096))
                 try:
-                    data = _coerce_json(resp.text)
+                    data = parse(resp.text)
                 except Exception as exc:
                     head = (resp.text or "").strip().replace("\n", " ")[:80]
-                    raise ValueError(f"non-JSON reply ({exc}); starts with: {head!r}") from exc
+                    raise ValueError(f"non-{fmt} reply ({exc}); starts with: {head!r}") from exc
                 self.metrics.record(CallRecord(
                     stage, resp.model, resp.prompt_tokens, resp.completion_tokens,
                     round(time.time() - start, 3),
                 ))
+                self._say(f"{stage}: ok in {time.time() - start:.0f}s "
+                          f"({resp.prompt_tokens}+{resp.completion_tokens} tokens)")
                 return data
             except Exception as exc:  # noqa: BLE001 - retry on any provider/JSON error
                 last_error = exc
@@ -253,6 +292,8 @@ class LLMProvider(ReasoningProvider):
                     getattr(src, "completion_tokens", 0) or 0,
                     round(time.time() - start, 3), error=str(exc)[:200],
                 ))
+                self._say(f"{stage}: attempt {attempt} failed after {time.time() - start:.0f}s — "
+                          f"{str(exc)[:120]}")
                 if isinstance(exc, TruncatedOutput):
                     break                      # same ceiling would truncate again
                 if attempt < self._max_retries and self._backoff:
@@ -268,6 +309,7 @@ class LLMProvider(ReasoningProvider):
                 stage, getattr(self._client, "model", "unknown"), 0, 0, 0.0,
                 fallback=True, error=str(exc)[:200], event=True,
             ))
+            self._say(f"{stage}: FALLBACK to the deterministic engine — {str(exc)[:120]}")
             return fallback_fn()
 
     # -- ReasoningProvider API -------------------------------------------- #
@@ -408,6 +450,7 @@ class LLMProvider(ReasoningProvider):
                     error="sandbox rejected bundle; repair pass: " + output[-160:].replace("\n", " "),
                     event=True,
                 ))
+                self._say("codegen: sandbox rejected the bundle — repair pass with the failure output")
                 files = self._llm_repair_files(analysis, architecture, files, output)
                 if not files or not any(f.path.startswith("tests/") for f in files):
                     raise ValueError("repaired bundle missing a tests/ suite")
@@ -426,6 +469,7 @@ class LLMProvider(ReasoningProvider):
                 "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
                 fallback=True, error=str(exc)[:200], event=True,
             ))
+            self._say(f"codegen: FALLBACK to the verified template — {str(exc)[:120]}")
 
     def _llm_generate_files(
         self, analysis: AnalysisResult, architecture: Architecture
@@ -470,6 +514,108 @@ class LLMProvider(ReasoningProvider):
             if path and (content or path.endswith("__init__.py")):
                 repaired.append(Artifact(path, content or "", self._infer_kind(path)))
         return repaired
+
+    # -- brownfield: a change set against an existing repository ------------ #
+
+    def generate_change(self, analysis, architecture, requirement, repo_files, repo_root):
+        """The model proposes only the files to add/change (code, tests or docs). The
+        change is accepted only if, laid over a throwaway copy of the repository, it
+        passes the static scan, compiles, and the repository's own tests plus the new
+        ones pass. One repair pass with the real failure, then the deterministic engine
+        (which authors only changes it knows exactly)."""
+
+        from agentic_sdlc.tools import repo as repo_tool
+
+        if not self._enable_codegen:
+            return self._fallback.generate_change(analysis, architecture, requirement,
+                                                  repo_files, repo_root)
+        context = repo_tool.context_files(repo_files, requirement)
+        try:
+            files, summary = self._llm_change(analysis, architecture, requirement, context)
+            files = repo_tool.only_changes(repo_files, files)
+            if not files:
+                raise ValueError("model proposed no changes")
+            self._say(f"codegen: change set of {len(files)} file(s) — sandbox gate "
+                      "(scan, compile, repository tests with the change applied)")
+            ok, output = self._validate_change(repo_root, files)
+            if not ok:
+                self.metrics.record(CallRecord(
+                    "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
+                    error="sandbox rejected change; repair pass: " + output[-160:].replace("\n", " "),
+                    event=True,
+                ))
+                self._say("codegen: sandbox rejected the change — repair pass with the failure output")
+                files, summary = self._llm_change(analysis, architecture, requirement, context,
+                                                  previous=files, sandbox_output=output)
+                files = repo_tool.only_changes(repo_files, files)
+                if not files:
+                    raise ValueError("repair pass proposed no changes")
+                ok, output = self._validate_change(repo_root, files)
+                if not ok:
+                    raise ValueError("proposed change failed the sandbox gate after one repair pass")
+            self._say("codegen: change set passed the sandbox gate")
+            return files, summary
+        except Exception as exc:  # noqa: BLE001 - degrade to the deterministic engine
+            self.metrics.record(CallRecord(
+                "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
+                fallback=True, error=str(exc)[:200], event=True,
+            ))
+            self._say(f"codegen: FALLBACK to the deterministic engine — {str(exc)[:120]}")
+            return self._fallback.generate_change(analysis, architecture, requirement,
+                                                  repo_files, repo_root)
+
+    def _llm_change(self, analysis, architecture, requirement, context: dict[str, str],
+                    previous: list[Artifact] | None = None, sandbox_output: str = ""):
+        api = "\n".join(f"  {e.method} {e.path}" for e in architecture.api)
+        repo = "\n\n".join(f"### {p}\n{t}" for p, t in context.items())
+        user = (
+            f"REQUIREMENT (a change to the existing repository):\n{requirement}\n\n"
+            + _analysis_context(analysis) + "\n"
+            f"Design context: {architecture.overview}\nAPI:\n{api}\n\n"
+            f"REPOSITORY FILES (relevant subset, full content):\n{repo}"
+        )
+        if previous is not None:
+            listing = "\n\n".join(f"### {f.path}\n{f.content}" for f in previous)
+            user += (f"\n\nPREVIOUS ATTEMPT (rejected):\n{listing}\n\n"
+                     f"SANDBOX OUTPUT:\n{sandbox_output[-4000:]}")
+        data = self._ask("codegen", load_prompt("codegen_change"), user, _parse_file_blocks,
+                         json_mode=False, fmt="file-block")
+        files = []
+        for f in data.get("files", []):
+            path = str(f.get("path", "")).strip()
+            content = f.get("content", "")
+            if path and (content or path.endswith("__init__.py")):
+                files.append(Artifact(path, content or "", self._infer_kind(path)))
+        return files, str(data.get("summary", ""))
+
+    def _validate_change(self, repo_root: str, files: list[Artifact]) -> tuple[bool, str]:
+        """Overlay the change on a throwaway copy of the repository; scan the changed
+        files, compile them, then run the repository's test suite (old + new tests)."""
+
+        import tempfile
+
+        from agentic_sdlc.tools import CodeRunner
+        from agentic_sdlc.tools import repo as repo_tool
+        from agentic_sdlc.tools.static_check import scan_file, scan_tree
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = repo_tool.materialize_overlay(repo_root, files, Path(tmp) / "overlay")
+            local = {p.name.removesuffix(".py") for p in root.iterdir()}
+            changed = {f.path for f in files}
+            high = [x for f in files if f.path.endswith(".py")
+                    for x in scan_file(root / f.path, local_packages=local) if x.severity == "high"]
+            high += [x for x in scan_tree(root)
+                     if x.rule == "stdlib-shadowing" and x.path.replace("\\", "/") in changed]
+            if high:
+                return False, "static safety scan (code not executed):\n" + "\n".join(
+                    f"{x.rule}: {x.detail} (line {x.line})" for x in high[:10])
+            runner = CodeRunner()
+            failed = [r for r in runner.compile_python([root / f.path for f in files
+                                                        if f.path.endswith(".py")]) if not r.ok]
+            if failed:
+                return False, "\n".join(f"{r.path}: {r.error}" for r in failed)
+            result = runner.run_unittests(root)
+            return result.ok, result.output
 
     @staticmethod
     def _infer_kind(path: str) -> str:

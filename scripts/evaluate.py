@@ -36,8 +36,8 @@ AMBIG = (ROOT / "examples" / "ambiguous.txt").read_text(encoding="utf-8").strip(
 # name, requirement, config overrides, expectations
 SCENARIOS = [
     ("greenfield",        GREEN, {},                              dict(passed=True,  halted=False, min_artifacts=15, repairs=0)),
-    ("brownfield",        BROWN, {"repo": "demo"},                dict(passed=True,  halted=False, min_artifacts=17, repairs=0, impact=True,
-                                                                       feature="url_shortener/ratelimit.py")),
+    ("brownfield",        BROWN, {"repo": "demo"},                dict(passed=True,  halted=False, min_artifacts=5, repairs=0, impact=True,
+                                                                       feature="url_shortener/ratelimit.py", change_set=True)),
     ("ambiguous",         AMBIG, {},                              dict(passed=True,  halted=False, min_artifacts=6,  repairs=1)),
     ("retry-recovers",    GREEN, {"inject_fault": {"code": 1}},   dict(passed=True,  halted=False, min_artifacts=15, retries=1)),
     ("optional-degrades", GREEN, {"inject_fault": {"docs": 9}},   dict(passed=True,  halted=False, degradations=1)),
@@ -70,6 +70,11 @@ def run_scenario(name, requirement, overrides, expect, tmp):
     for k in ("repairs", "retries", "degradations"):
         if k in expect:
             verdicts[k] = run[k] == expect[k]
+    if expect.get("change_set"):
+        # Brownfield against a repo: only changed files + a reviewable diff, and the
+        # repository's own tests re-ran with the change applied.
+        verdicts["change set + diff, no full regeneration"] = (
+            "CHANGES.diff" in paths and "url_shortener/store.py" not in paths)
     if expect.get("feature"):
         # The requested change must actually be in the output, not just the impact report.
         verdicts["requested feature present"] = expect["feature"] in paths

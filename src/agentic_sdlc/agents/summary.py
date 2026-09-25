@@ -122,6 +122,12 @@ class SummaryAgent(Agent):
         """State plainly where the validated slice is narrower than the design."""
 
         out: list[str] = []
+        if bb.change_mode:
+            out.append(
+                "Change mode: the repository was only read; the proposal is the change set in "
+                "this folder plus CHANGES.diff, validated on a throwaway copy of the repository "
+                "with the change applied (its tests/ suite plus the new tests). The model sees a "
+                "relevance-ranked subset of the repository (~60 KB); file deletions are not proposed.")
         implemented, design_only = bb.endpoint_coverage()
         if design_only:
             out.append(
@@ -195,6 +201,17 @@ class SummaryAgent(Agent):
         impact = ""
         if bb.impact:
             impact = "\n\n## Codebase Impact (brownfield)\n\n" + bullets(bb.impact)
+        if bb.change_mode:
+            from agentic_sdlc.tools import repo as repo_tool
+            changes = [a for a in bb.all_artifacts()
+                       if a.kind != "change" and a.path != "ENGINEERING_SUMMARY.md"]
+            rows = "\n".join(f"| `{p}` | {kind} | +{a} / -{r} |"
+                             for p, kind, a, r in repo_tool.diff_stats(bb.repo_files, changes))
+            impact += ("\n\n## Proposed change set (against the existing repository)\n\n"
+                       + (bb.change_summary + "\n\n" if bb.change_summary else "")
+                       + ("| File | Change | Lines |\n| --- | --- | --- |\n" + rows
+                          + "\n\nFull patch: `CHANGES.diff`. The repository itself was not modified."
+                          if rows else "No change set was produced (see Validation)."))
 
         return f"""# Engineering Summary
 

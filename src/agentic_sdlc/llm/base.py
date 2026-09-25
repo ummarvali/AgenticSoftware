@@ -6,8 +6,8 @@ the single seam that lets the *same* orchestration run on:
 * :class:`~agentic_sdlc.llm.deterministic.DeterministicProvider` — an offline,
   dependency-free engine that ships domain knowledge as code. It makes the
   prototype reproducible and runnable with zero API keys (crucial for grading).
-* :class:`~agentic_sdlc.llm.llm_provider.LLMProvider` — a live LLM backend
-  for open-ended requirements (optional, enabled only when configured).
+* :class:`~agentic_sdlc.llm.llm_provider.LLMProvider` — the live-model backend and the
+  primary mode; it falls back to the deterministic engine per stage.
 
 Keeping the interface small and typed is what makes the two interchangeable.
 """
@@ -62,3 +62,16 @@ class ReasoningProvider(abc.ABC):
         self, analysis: AnalysisResult, architecture: Architecture
     ) -> list[Artifact]:
         """Emit supporting documentation for the generated artifacts."""
+
+    def generate_change(
+        self,
+        analysis: AnalysisResult,
+        architecture: Architecture,
+        requirement: str,
+        repo_files: dict[str, str],
+        repo_root: str,
+    ) -> tuple[list[Artifact], str]:
+        """Brownfield: propose the files to add or change in an existing repository
+        (code, tests or docs) and a one-paragraph summary. The default authors nothing;
+        the run then reports that no change set was produced."""
+        return [], ""

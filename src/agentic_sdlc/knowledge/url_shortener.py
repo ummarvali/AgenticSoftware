@@ -1053,6 +1053,23 @@ class UrlShortenerPack(KnowledgePack):
                          *analysis.functional_requirements]).lower()
         return "rate limit" in text or "rate-limit" in text or "throttl" in text
 
+    def change(self, analysis: AnalysisResult, repo_files: dict[str, str]) -> tuple[list[Artifact], str]:
+        """Offline brownfield: add rate limiting to a repository that has this pack's own
+        layout (e.g. ``demo/``). Any other change, or an unfamiliar layout, returns an
+        empty change set — authoring arbitrary changes needs the live model."""
+
+        plain_server = _SERVER.replace("#LIMITER_IMPORT\n", "").replace("#LIMITER_ARG", "")
+        if not (self._wants_rate_limit(analysis)
+                and repo_files.get("url_shortener/server.py") == plain_server
+                and "url_shortener/api.py" in repo_files and "limiter" in repo_files["url_shortener/api.py"]):
+            return [], ""
+        files = [a for a in self.code(analysis, self.architecture(analysis))
+                 if a.path in ("url_shortener/ratelimit.py", "url_shortener/server.py", "openapi.yaml")]
+        files.append(Artifact("tests/test_ratelimit.py", _TEST_RATELIMIT, "test"))
+        return files, ("Adds a per-client token-bucket limiter (url_shortener/ratelimit.py), wires it "
+                       "into the server for POST /api/shorten (HTTP 429 when exhausted), documents the "
+                       "429 in openapi.yaml, and adds tests for the bucket and the 429 path.")
+
     def code(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
         limited = self._wants_rate_limit(analysis)
         server = (_SERVER.replace("#LIMITER_IMPORT", "from .ratelimit import TokenBucketLimiter")
