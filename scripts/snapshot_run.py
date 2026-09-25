@@ -36,6 +36,9 @@ def main() -> int:
             return 1
         src = candidates[-1]
 
+    if not args.name or "/" in args.name or "\\" in args.name or args.name in (".", ".."):
+        print(f"invalid --name {args.name!r}: use a plain folder name under examples/")
+        return 2
     dst = Path("examples") / args.name
     if dst.exists():
         shutil.rmtree(dst)

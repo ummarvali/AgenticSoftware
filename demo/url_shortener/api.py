@@ -17,16 +17,21 @@ _REASON = {
     302: "Found",
     400: "Bad Request",
     404: "Not Found",
+    429: "Too Many Requests",
     500: "Internal Server Error",
 }
 
 
 class WSGIApp:
-    """Minimal router mapping HTTP requests onto the service."""
+    """Minimal router mapping HTTP requests onto the service.
 
-    def __init__(self, service: ShortenerService | None = None) -> None:
+    ``limiter`` is optional: any object with ``allow(key) -> bool`` guards link
+    creation per client address (HTTP 429 when it says no)."""
+
+    def __init__(self, service: ShortenerService | None = None, limiter=None) -> None:
         self.service = service or ShortenerService()
         self.analytics = AnalyticsService(self.service.store)
+        self.limiter = limiter
 
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
@@ -35,6 +40,8 @@ class WSGIApp:
             if path == "/healthz":
                 return self._json(start_response, 200, {"status": "ok"})
             if path == "/api/shorten" and method == "POST":
+                if self.limiter and not self.limiter.allow(environ.get("REMOTE_ADDR", "?")):
+                    return self._json(start_response, 429, {"error": "rate limit exceeded"})
                 return self._shorten(environ, start_response)
             if path.startswith("/api/stats/") and method == "GET":
                 return self._stats(start_response, path[len("/api/stats/") :])

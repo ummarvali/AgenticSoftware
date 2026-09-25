@@ -10,7 +10,7 @@ import unittest
 
 from agentic_sdlc.llm.client import LLMResponse, MetricsCollector
 from agentic_sdlc.llm.llm_provider import LLMProvider
-from agentic_sdlc.models import Requirement, RequirementKind
+from agentic_sdlc.models import Artifact, Requirement, RequirementKind
 
 
 class FakeClient:
@@ -295,6 +295,106 @@ class SamplingParamToleranceTests(unittest.TestCase):
             self.assertEqual(_temperature(None), 0.0)
         finally:
             os.environ.pop("AGENTIC_LLM_TEMPERATURE", None)
+
+
+
+class HardeningTests(unittest.TestCase):
+    """Behaviours added after an independent review of the LLM path."""
+
+    def test_generated_tests_cannot_read_the_key_from_their_environment(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from agentic_sdlc.tools import CodeRunner
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-not-a-real-key"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "tests").mkdir()
+                Path(tmp, "tests", "test_env.py").write_text(
+                    "import os, unittest\n"
+                    "class T(unittest.TestCase):\n"
+                    "    def test_no_key(self):\n"
+                    "        self.assertNotIn('ANTHROPIC_API_KEY', os.environ)\n")
+                result = CodeRunner().run_unittests(Path(tmp))
+            self.assertTrue(result.ok, result.output)
+        finally:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    def test_truncation_is_not_retried_and_its_tokens_are_counted(self):
+        from agentic_sdlc.llm.client import TruncatedOutput
+        trunc = TruncatedOutput("model output truncated at max_tokens=64000", 100, 64000)
+        provider = _provider([trunc, "never used"])
+        analysis = provider.analyze_requirement(Requirement("Build a URL shortener."))
+        self.assertEqual(analysis.domain, "url_shortener")        # fell back
+        self.assertEqual(provider._client.calls, 1)              # no same-ceiling retry
+        self.assertEqual(provider.metrics.total_tokens, 64100)   # spend is visible
+
+    def test_pricing_uses_the_real_rate_and_longest_prefix(self):
+        from agentic_sdlc.llm.client import _price_for
+        self.assertEqual(_price_for("claude-sonnet-5"), (2.00, 10.00))
+        self.assertEqual(_price_for("gpt-4o-mini-2024-07-18"), (0.15, 0.60))
+        self.assertEqual(_price_for("some-unknown-model"), (3.00, 15.00))
+
+    def test_fenced_reply_with_inner_fences_parses(self):
+        from agentic_sdlc.llm.llm_provider import _coerce_json
+        reply = '```json\n{"files": [{"path": "README.md", "content": "```bash\\nrun\\n```"}]}\n```'
+        self.assertIn("```bash", _coerce_json(reply)["files"][0]["content"])
+
+    def test_plan_without_validation_is_rejected(self):
+        plan = json.dumps({"tasks": [
+            {"id": "d", "depends_on": [], "category": "design"},
+            {"id": "c", "depends_on": ["d"], "category": "code"},
+            {"id": "t", "depends_on": ["c"], "category": "tests"},
+            {"id": "s", "depends_on": ["t"], "category": "summary"},
+        ]})
+        provider = _provider([plan, plan])
+        analysis = provider._fallback.analyze_requirement(Requirement("Build a URL shortener."))
+        graph = provider.decompose(analysis)
+        self.assertGreaterEqual(provider.metrics.fallbacks, 1)
+        self.assertIn("validate", graph.by_id())                 # deterministic plan
+
+    def test_validation_is_made_to_depend_on_all_work(self):
+        plan = json.dumps({"tasks": [
+            {"id": "d", "depends_on": [], "category": "design"},
+            {"id": "c", "depends_on": ["d"], "category": "code"},
+            {"id": "t", "depends_on": ["c"], "category": "tests"},
+            {"id": "docs", "depends_on": ["d"], "category": "docs"},
+            {"id": "v", "depends_on": ["t"], "category": "validate"},      # forgot docs
+            {"id": "load", "depends_on": ["v"], "category": "tests"},      # after validation
+            {"id": "s", "depends_on": ["t"], "category": "summary"},       # forgot v
+        ]})
+        provider = _provider([plan])
+        analysis = provider._fallback.analyze_requirement(Requirement("Build a URL shortener."))
+        g = provider.decompose(analysis).by_id()
+        self.assertIn("docs", g["v"].depends_on)
+        self.assertNotIn("load", g["v"].depends_on)              # would be a cycle; kept as planned
+        self.assertIn("v", g["s"].depends_on)
+        self.assertEqual(provider.metrics.fallbacks, 0)
+
+    def test_dangerous_bundle_is_rejected_without_being_executed(self):
+        evil = json.dumps({"files": [
+            {"path": "pkg/__init__.py", "content": ""},
+            {"path": "pkg/m.py", "content": "import os\n\ndef f():\n    os.system('echo pwned')\n"},
+            {"path": "tests/test_m.py", "content": "import unittest\nclass T(unittest.TestCase):\n"
+                                                   "    def test_ok(self):\n        pass\n"},
+        ]})
+        provider = _provider([])
+        ok, out = provider._validate_bundle(
+            [Artifact(f["path"], f["content"]) for f in json.loads(evil)["files"]])
+        self.assertFalse(ok)
+        self.assertIn("code not executed", out)
+
+    def test_openai_reasoning_model_parameter_rename(self):
+        from agentic_sdlc.llm.client import _call
+        seen = []
+        def fake(**kw):
+            seen.append(dict(kw))
+            if "max_tokens" in kw:
+                raise ValueError("Unsupported parameter: 'max_tokens' is not supported with this "
+                                 "model. Use 'max_completion_tokens' instead.")
+            return "ok"
+        self.assertEqual(_call(fake, {"model": "o4-mini", "max_tokens": 10}), "ok")
+        self.assertEqual(seen[-1]["max_completion_tokens"], 10)
 
 
 if __name__ == "__main__":

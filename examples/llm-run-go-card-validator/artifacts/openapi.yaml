@@ -2,20 +2,47 @@ openapi: 3.0.3
 info:
   title: Generated API
   version: 1.0.0
-  description: Endpoints implemented by the generated prototype slice.
+  description: "Synthesized by the Repair agent from the API design; lists only endpoints the generated slice serves."
 paths:
-  /v1/transactions/validate:
+  "/v1/validate":
     post:
-      summary: Validate a card transaction against format, field, and business rules; idempotent via Idempotency-Key header
+      summary: "Submit a card transaction for validation; returns decision and reason codes. Idempotent via Idempotency-Key header."
       responses:
-        "200": { description: OK }
-  /healthz:
+        "200":
+          description: "{ transaction_id, decision, reason_codes[], masked_card: {bin,last4,network}, latency_ms }"
+  "/v1/rules/reload":
+    post:
+      summary: "Hot-reload validation rule configuration from disk without restarting the service"
+      responses:
+        "200":
+          description: "{ status: 'reloaded', rules_version, loaded_at }"
+  "/v1/rules":
     get:
-      summary: Liveness probe indicating the process is running
+      summary: "Return the currently active rule configuration (non-sensitive) for observability"
       responses:
-        "200": { description: OK }
-  /readyz:
+        "200":
+          description: "{ min_amount, max_amount, daily_cap, monthly_cap, allowed_networks[], velocity_window_seconds, velocity_max_count, suspicious_amount_threshold }"
+  "/v1/blacklist":
+    post:
+      summary: "Add a card token (or raw PAN, hashed server-side) to the blacklist store"
+      responses:
+        "201":
+          description: "{ card_token, reason, added_at }"
+  "/healthz":
     get:
-      summary: Readiness probe verifying local SQLite store is accessible
+      summary: "Liveness probe: process is running"
       responses:
-        "200": { description: OK }
+        "200":
+          description: "{ status: 'ok' }"
+  "/readyz":
+    get:
+      summary: "Readiness probe: rules config loaded and stores reachable"
+      responses:
+        "200":
+          description: "{ status: 'ready', rules_loaded: true, store_ok: true }"
+  "/metrics":
+    get:
+      summary: "Prometheus-compatible text exposition of request counts, decision counts, latency histogram"
+      responses:
+        "200":
+          description: "text/plain Prometheus exposition format"

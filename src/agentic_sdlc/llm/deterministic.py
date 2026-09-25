@@ -7,7 +7,7 @@ explicit default assumptions, and produces a dependency-aware task graph plus al
 engineering artifacts.
 
 The same agents can instead call a live model via
-:class:`~agentic_sdlc.llm.openai_provider.OpenAIProvider`; nothing else changes.
+:class:`~agentic_sdlc.llm.llm_provider.LLMProvider`; nothing else changes.
 """
 
 from __future__ import annotations

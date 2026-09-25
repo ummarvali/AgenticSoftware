@@ -36,7 +36,8 @@ AMBIG = (ROOT / "examples" / "ambiguous.txt").read_text(encoding="utf-8").strip(
 # name, requirement, config overrides, expectations
 SCENARIOS = [
     ("greenfield",        GREEN, {},                              dict(passed=True,  halted=False, min_artifacts=15, repairs=0)),
-    ("brownfield",        BROWN, {"repo": "demo"},                dict(passed=True,  halted=False, min_artifacts=15, repairs=0, impact=True)),
+    ("brownfield",        BROWN, {"repo": "demo"},                dict(passed=True,  halted=False, min_artifacts=17, repairs=0, impact=True,
+                                                                       feature="url_shortener/ratelimit.py")),
     ("ambiguous",         AMBIG, {},                              dict(passed=True,  halted=False, min_artifacts=6,  repairs=1)),
     ("retry-recovers",    GREEN, {"inject_fault": {"code": 1}},   dict(passed=True,  halted=False, min_artifacts=15, retries=1)),
     ("optional-degrades", GREEN, {"inject_fault": {"docs": 9}},   dict(passed=True,  halted=False, degradations=1)),
@@ -58,7 +59,7 @@ def run_scenario(name, requirement, overrides, expect, tmp):
         "summary complete": bool(result.summary and result.summary.risks and result.summary.validation_approach)
                             if not run["halted"] else True,
         "all tasks completed": run["halted"] or (result.task_graph is not None and
-                               run["tasks_ok"] + 0 >= len(result.task_graph.tasks) - run["degradations"]),
+                               run["tasks_ok"] >= len(result.task_graph.tasks) - run["degradations"]),
     }
     verdicts = {
         "validation as expected": passed == expect["passed"],
@@ -69,6 +70,9 @@ def run_scenario(name, requirement, overrides, expect, tmp):
     for k in ("repairs", "retries", "degradations"):
         if k in expect:
             verdicts[k] = run[k] == expect[k]
+    if expect.get("feature"):
+        # The requested change must actually be in the output, not just the impact report.
+        verdicts["requested feature present"] = expect["feature"] in paths
     if expect.get("impact"):
         verdicts["impact analysed"] = any(e["kind"] == "impact" or "impact" in e.get("message", "").lower()
                                           for e in result.events)
@@ -98,7 +102,8 @@ def recorded_live_runs():
             "validation": run.get("validation"),
             "artifacts": run.get("artifacts"),
             "tasks": run.get("tasks_ok"), "reused": run.get("reused"), "repairs": run.get("repairs"),
-            "llm_calls": len(calls), "tokens": llm.get("total_tokens"),
+            "llm_calls": llm.get("api_calls", len(calls)), "retries": llm.get("retries", 0),
+            "tokens": llm.get("total_tokens"),
             "est_cost_usd": llm.get("est_cost_usd"), "fallbacks": llm.get("fallbacks"),
             "fallback_stages": [c["stage"] for c in calls if c.get("fallback")],
             "duration_s": run.get("duration_s"),
@@ -142,6 +147,7 @@ def main() -> int:
             print(f"{l['recorded_run']:<22} domain={l['domain']}  {l['validation']}  artifacts={l['artifacts']}  "
                   f"tasks={l['tasks']} reused={l['reused']} repairs={l['repairs']}")
             print(f"{'':<22} llm: {l['llm_calls']} calls, {l['tokens']} tokens, ~${l['est_cost_usd']:.4f}, "
+                  f"retries={l['retries']} "
                   f"fallbacks={l['fallbacks']} {l['fallback_stages'] or ''}  "
                   f"model-authored code: {'yes' if l['model_authored_code'] else 'no'}  {l['duration_s']}s")
     print(f"\nRESULT: {'ALL EXPECTATIONS MET' if report['all_ok'] else 'EXPECTATION FAILURES'}")

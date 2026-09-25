@@ -9,12 +9,15 @@ the pipeline still produces a defensible impact assessment.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from agentic_sdlc.agents.base import Agent, AgentDecision
 from agentic_sdlc.models import Task
 from agentic_sdlc.orchestrator.state import AgentContext
 
+_STOPWORDS = {"that", "this", "with", "from", "into", "have", "should", "would", "existing",
+              "service", "system", "prevent", "make", "build", "the", "and", "for"}
 _CHANGE_VERBS = ("add", "rate limit", "rate-limit", "refactor", "fix", "migrate",
                  "optimize", "cache", "auth", "secure")
 
@@ -45,7 +48,7 @@ class CodebaseAnalystAgent(Agent):
         impact: list[str] = []
 
         if decision.action == "scan-repo":
-            impact += self._scan_repo(decision.params["repo"])
+            impact += self._scan_repo(decision.params["repo"], bb.requirement.text)
 
         # Reason from the design regardless, so we always give a system-level view.
         low = bb.requirement.text.lower()
@@ -63,12 +66,32 @@ class CodebaseAnalystAgent(Agent):
         ctx.emit(self.name, f"identified {len(impact)} impacted areas")
 
     @staticmethod
-    def _scan_repo(repo: str) -> list[str]:
-        found: list[str] = []
-        for root, _dirs, files in os.walk(repo):
+    def _scan_repo(repo: str, requirement: str = "", limit: int = 10) -> list[str]:
+        """Rank source files by how often the requirement's key terms appear in their
+        path and content; return the top ``limit`` as candidate touch points. A
+        heuristic (term overlap, not semantic search) — stated as such in the output."""
+
+        terms = {w for w in re.findall(r"[a-z][a-z0-9_]{3,}", requirement.lower())
+                 if w not in _STOPWORDS}
+        if "rate" in requirement.lower():
+            terms |= {"rate", "limit", "throttle", "429", "request", "route", "handler"}
+        skip = {".git", ".venv", "venv", "node_modules", "__pycache__", "runs", "dist", "build"}
+        scored: list[tuple[int, str]] = []
+        for root, dirs, files in os.walk(repo):
+            dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
             for fname in files:
-                if fname.endswith((".py", ".ts", ".js", ".go", ".java")):
-                    found.append(os.path.relpath(os.path.join(root, fname), repo))
-                if len(found) >= 25:  # cap: this is a summary, not a full crawl
-                    return [f"existing file (candidate touch point): {p}" for p in found]
-        return [f"existing file (candidate touch point): {p}" for p in found]
+                if not fname.endswith((".py", ".ts", ".js", ".go", ".java")):
+                    continue
+                path = os.path.join(root, fname)
+                rel = os.path.relpath(path, repo)
+                try:
+                    with open(path, encoding="utf-8", errors="ignore") as fh:
+                        text = (rel + "\n" + fh.read(65536)).lower()
+                except OSError:
+                    continue
+                score = sum(text.count(t) for t in terms)
+                if score:
+                    scored.append((score, rel))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        return [f"existing file (candidate touch point, term-overlap score {sc}): {rel}"
+                for sc, rel in scored[:limit]]

@@ -4,7 +4,7 @@ A pack encapsulates everything the deterministic engine knows about one problem
 domain (its architecture, code, tests, and docs). New domains are added by writing
 a new pack and registering it, without touching agents or the orchestrator. The
 mandatory URL-shortener use case is implemented as :mod:`.url_shortener`; anything
-unrecognised falls back to :mod:`.generic`.
+unrecognised falls back to ``GenericPack`` (``knowledge/__init__.py``).
 """
 
 from __future__ import annotations

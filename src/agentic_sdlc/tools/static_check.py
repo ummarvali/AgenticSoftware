@@ -8,7 +8,12 @@ flags the things a bank's code reviewer would refuse on sight:
   ``os.popen``, ``subprocess`` with ``shell=True``, ``pickle``/``marshal`` loads;
 * **imports outside the standard library** — the generated service is required to be
   stdlib-only (no unpinned or outdated third-party packages can sneak in);
-* **hard-coded secrets** — string literals that look like API keys or tokens.
+* **hard-coded secrets** — string literals that look like API keys or tokens;
+* **stdlib shadowing** — a generated top-level module named like a standard-library
+  module (e.g. ``unittest.py``) could subvert the test run itself.
+
+Import aliases are resolved (``import subprocess as sp``, ``from os import system``),
+and ``shell=True`` is flagged on any call.
 
 Findings are ``high`` (fails the check) or ``low`` (reported only). It is a guardrail,
 not a full linter/SAST: production would add ruff/bandit/pip-audit in CI.
@@ -46,13 +51,34 @@ class Finding:
         return f"{self.path}:{self.line} [{self.severity}] {self.rule}: {self.detail}"
 
 
-def _call_name(node: ast.Call) -> str:
+def _call_name(node: ast.Call, aliases: dict[str, str] | None = None) -> str:
+    """Dotted name of the callee with import aliases resolved: ``sp.run`` →
+    ``subprocess.run``, ``system`` (from os) → ``os.system``, ``builtins.eval`` → ``eval``."""
+
+    aliases = aliases or {}
     f = node.func
     if isinstance(f, ast.Name):
-        return f.id
-    if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-        return f"{f.value.id}.{f.attr}"
-    return ""
+        name = aliases.get(f.id, f.id)
+    elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+        name = f"{aliases.get(f.value.id, f.value.id)}.{f.attr}"
+    else:
+        return ""
+    return name.removeprefix("builtins.")
+
+
+def _aliases(tree: ast.AST) -> dict[str, str]:
+    """Map local names bound by imports to the fully qualified names they refer to."""
+
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    out[a.asname] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for a in node.names:
+                out[a.asname or a.name] = f"{node.module}.{a.name}"
+    return out
 
 
 def _is_stdlib(top: str) -> bool | None:
@@ -76,17 +102,17 @@ def scan_file(path: Path, *, local_packages: set[str] | None = None) -> list[Fin
 
     findings: list[Finding] = []
     local = local_packages or set()
+    aliases = _aliases(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            name = _call_name(node)
+            name = _call_name(node, aliases)
             sev = _DANGEROUS_CALLS.get(name)
             if sev:
                 findings.append(Finding(rel, node.lineno, sev, "dangerous-call", f"{name}()"))
-            if name.startswith("subprocess.") and any(
-                kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
-                for kw in node.keywords
-            ):
-                findings.append(Finding(rel, node.lineno, "high", "dangerous-call", f"{name}(shell=True)"))
+            if any(kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                   for kw in node.keywords):
+                findings.append(Finding(rel, node.lineno, "high", "dangerous-call",
+                                        f"{name or 'call'}(shell=True)"))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             if isinstance(node, ast.ImportFrom) and node.level:      # relative import → local
                 continue
@@ -112,6 +138,19 @@ def scan_tree(root: Path) -> list[Finding]:
     files = sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
     local = {p.relative_to(root).parts[0].removesuffix(".py") for p in files}
     out: list[Finding] = []
+    # Modules importable by top-level name during the test run: the project root and
+    # the tests/ directory (unittest discovery puts it on sys.path).
+    for f in files:
+        parts = f.relative_to(root).parts
+        if len(parts) == 1 or (len(parts) == 2 and parts[0] == "tests"):
+            top = f.stem                      # top-level module: foo.py / tests/foo.py
+        elif len(parts) == 2 and f.name == "__init__.py":
+            top = parts[0]                    # top-level package: foo/__init__.py
+        else:
+            continue
+        if _is_stdlib(top):
+            out.append(Finding(str(f.relative_to(root)), 1, "high", "stdlib-shadowing",
+                               f"'{top}' shadows a standard-library module"))
     for f in files:
         out += [Finding(str(f.relative_to(root)), x.line, x.severity, x.rule, x.detail)
                 for x in scan_file(f, local_packages=local)]

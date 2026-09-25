@@ -6,7 +6,7 @@ the single seam that lets the *same* orchestration run on:
 * :class:`~agentic_sdlc.llm.deterministic.DeterministicProvider` — an offline,
   dependency-free engine that ships domain knowledge as code. It makes the
   prototype reproducible and runnable with zero API keys (crucial for grading).
-* :class:`~agentic_sdlc.llm.openai_provider.OpenAIProvider` — a live LLM backend
+* :class:`~agentic_sdlc.llm.llm_provider.LLMProvider` — a live LLM backend
   for open-ended requirements (optional, enabled only when configured).
 
 Keeping the interface small and typed is what makes the two interchangeable.

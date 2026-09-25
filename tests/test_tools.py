@@ -41,9 +41,6 @@ class CodeRunnerTests(unittest.TestCase):
             self.assertTrue(result.ok)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class StaticSafetyScanTests(unittest.TestCase):
     """The AST guardrail catches what a code reviewer would refuse on sight."""
@@ -77,8 +74,33 @@ class StaticSafetyScanTests(unittest.TestCase):
         self.assertTrue(any(x.rule == "non-stdlib-import" and "requests" in x.detail for x in f), f)
         self.assertFalse(any("json" in x.detail for x in f))
 
+    def test_import_aliases_and_shell_true_are_resolved(self):
+        f = self._scan("from os import system\nimport subprocess as sp\n"
+                       "system('x')\nsp.Popen('x', shell=True)\n")
+        details = {x.detail for x in f if x.rule == "dangerous-call"}
+        self.assertIn("os.system()", details)
+        self.assertIn("subprocess.Popen(shell=True)", details)
+
+    def test_stdlib_shadowing_module_is_high(self):
+        import sys
+        import tempfile
+        from pathlib import Path
+        from agentic_sdlc.tools.static_check import scan_tree
+        if sys.version_info < (3, 10):
+            self.skipTest("needs Python 3.10+")
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "unittest.py").write_text("import sys\nsys.exit(0)\n")
+            Path(tmp, "pkg").mkdir()
+            Path(tmp, "pkg", "json.py").write_text("x = 1\n")      # inside a package: fine
+            f = scan_tree(Path(tmp))
+        self.assertEqual([x.path for x in f if x.rule == "stdlib-shadowing"], ["unittest.py"])
+
     def test_hardcoded_secret_is_high(self):
         # Deliberately FAKE, key-shaped string (not a real credential): it exists only to
         # prove the scanner flags hard-coded secrets in generated code.
         f = self._scan('KEY = "sk-ant-api03-abcdefghijklmnop"\n')
         self.assertTrue(any(x.rule == "hardcoded-secret" for x in f), f)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -57,17 +57,17 @@
 | Check | Result | Detail |
 | --- | --- | --- |
 | code compiles | PASS | all files compiled |
-| tests pass | PASS | Ran 20 tests in 0.003s — OK |
+| tests pass | PASS | Ran 20 tests in 0.002s — OK |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
 | static safety scan | PASS | no findings |
 
 Approach:
-- Static: every generated .py file is compiled (py_compile).
-- Dynamic: the generated unit + integration suite is executed in a subprocess with a timeout and a credential-scrubbed environment.
-- Contract: an OpenAPI document must exist whenever the design exposes an API.
+- Static safety (first, before anything runs): an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle, import aliases resolved), imports outside the standard library, hard-coded secrets and modules that shadow the standard library; code with a high-severity finding is not executed.
+- Static: every generated .py file is compiled.
+- Dynamic: the generated unit + integration suite is executed in an isolated interpreter (python -I) in a subprocess, with a timeout and a credential-scrubbed environment.
+- Contract: an OpenAPI document must exist whenever the design exposes an API (existence is checked, not conformance).
 - Documentation: README/architecture docs must be present.
-- Static safety: an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle), imports outside the standard library, and hard-coded secrets.
 - Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.
 - Human: a final acceptance gate reviews this report before the run is accepted.
 
@@ -82,8 +82,8 @@ Approach:
 - human_gates_passed_before_summary: 2
 
 ## Risks
-- Persistence is SQLite (single file, single node); a multi-node deployment needs an external database.
-- No authentication or rate limiting on write endpoints by default (abuse risk).
+- Persistence: an in-memory store (data lost on restart) or SQLite (single file, single node) where configured; a multi-node deployment needs an external database.
+- Rate limiting in the generated slice is in-process (resets on restart, not shared across instances); write endpoints are unauthenticated.
 - Generated tests cover core paths; add load/security tests before production.
 
 ## Trade-offs
@@ -100,4 +100,4 @@ Approach:
 - Offline deterministic engine covers known domains richly and unknown domains with a generic scaffold; it is not a general code synthesizer.
 - Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).
 - Human checkpoints are console-based in this prototype.
-- The validation sandbox is a subprocess with a timeout and scrubbed environment, not a network-isolated container.
+- The validation sandbox is an isolated-mode subprocess with a timeout and a scrubbed environment, not a network-isolated container or separate OS user.

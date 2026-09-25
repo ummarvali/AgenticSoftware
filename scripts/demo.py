@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
                     repo_path=str(ROOT)),
         provider=p)
 
-    # 3) Ambiguous — clarification + the validation feedback loop self-heals 3/4 -> 4/4.
+    # 3) Ambiguous — clarification + the validation feedback loop self-heals 4/5 -> 5/5.
     run("3/4 AMBIGUOUS — under-specified request",
         "Surfaces assumptions; validator finds a gap; Repair agent fixes it; re-validates",
         Requirement("Make the app faster."),

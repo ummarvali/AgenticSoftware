@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         provider=args.provider,
         interactive=args.interactive,
         output_root=args.output_root,
-        verbose=not args.quiet,
+        verbose=not (args.quiet or args.json),   # --json keeps stdout machine-readable
         parallel=not args.sequential,
         inject_fault=_parse_faults(args.inject_fault),
     )
@@ -86,10 +86,11 @@ def main(argv: list[str] | None = None) -> int:
         import json
 
         print(json.dumps(result.to_dict(), indent=2, default=str))
-        return 0
-
-    _print_report(result)
-    return 0 if (result.validation and result.validation.passed) else 1
+    else:
+        _print_report(result)
+    # Exit status for CI: 0 only for a validated, accepted run.
+    halted = (result.metrics or {}).get("run", {}).get("halted", False)
+    return 0 if (result.validation and result.validation.passed and not halted) else 1
 
 
 def _print_report(result) -> None:

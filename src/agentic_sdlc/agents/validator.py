@@ -56,31 +56,39 @@ class ValidatorAgent(Agent):
             else "; ".join(f"{c.path}: {c.error}" for c in failed),
         ))
 
-        # 2) Dynamic: the generated test suite must pass.
-        test_result = ctx.tools.runner.run_unittests(out)
-        checks.append(Check(
-            "tests pass",
-            test_result.ok,
-            self._test_detail(test_result.output),
-        ))
+        # 2) Static safety scan BEFORE anything is executed: dangerous calls, imports
+        #    outside the standard library, hard-coded secrets, stdlib-shadowing files.
+        findings = scan_tree(out)
+        high = [f for f in findings if f.severity == "high"]
 
-        # 3) Contract present when the design exposes an API.
+        # 3) Dynamic: the generated test suite must pass. Code with high-severity
+        #    findings is never executed.
+        if high:
+            checks.append(Check("tests pass", False,
+                                "not executed: the static safety scan found high-severity issues"))
+        else:
+            test_result = ctx.tools.runner.run_unittests(out)
+            checks.append(Check(
+                "tests pass",
+                test_result.ok,
+                self._test_detail(test_result.output),
+            ))
+
+        # 4) Contract present when the design exposes an API.
         has_api = bool(bb.architecture and bb.architecture.api)
         contract_exists = (out / "openapi.yaml").exists()
         checks.append(Check(
             "api contract present",
             (contract_exists or not has_api),
-            "openapi.yaml found" if contract_exists else "no API contract required",
+            "openapi.yaml found" if contract_exists
+            else ("openapi.yaml missing" if has_api else "no API contract required"),
         ))
 
-        # 4) Documentation present.
+        # 5) Documentation present.
         docs_exist = any(a.kind == "docs" for a in bb.docs)
         checks.append(Check("documentation present", docs_exist,
                             "docs generated" if docs_exist else "no docs generated"))
 
-        # 5) Static safety scan: dangerous calls, non-stdlib imports, hard-coded secrets.
-        findings = scan_tree(out)
-        high = [f for f in findings if f.severity == "high"]
         checks.append(Check(
             "static safety scan",
             not high,
@@ -90,7 +98,9 @@ class ValidatorAgent(Agent):
 
         report = ValidationReport(checks=checks, risks=self._risks(bb))
         bb.validation = report
-        bb.validated_fingerprint = bb.fingerprint()
+        # A report that found uncompilable code is never reused: a retry must re-check
+        # (and re-raise) rather than accept the failed report as "unchanged".
+        bb.validated_fingerprint = "" if failed else bb.fingerprint()
         bb.log("validation", report.summary,
                passed=report.passed, checks=[c.name for c in checks if not c.passed])
         ctx.emit(self.name, f"{report.summary}"
@@ -125,8 +135,9 @@ class ValidatorAgent(Agent):
         """Standing risks of the generated slice, derived from what was actually
         produced (not a copy of the design trade-offs, which the summary lists
         separately)."""
-        code = "\n".join(a.content.lower() for a in bb.all_artifacts() if a.kind == "code")
+        code = "\n".join(a.content.lower() for a in bb.all_artifacts() if a.kind in ("code", "config"))
         durable = "sqlite" in code
+        in_memory = any(m in code for m in ("inmemory", "in_memory", "in-memory", ":memory:"))
         has_auth = any(m in code for m in ("api_key", "apikey", "x-api-key", "authorization", "bearer"))
         has_limit = any(m in code for m in ("rate_limit", "ratelimit", "token_bucket", "429"))
         if has_auth and has_limit:
@@ -141,7 +152,10 @@ class ValidatorAgent(Agent):
         else:
             abuse = "No authentication or rate limiting on write endpoints by default (abuse risk)."
         return [
-            ("Persistence is SQLite (single file, single node); a multi-node deployment "
+            ("Persistence: an in-memory store (data lost on restart) or SQLite (single file, "
+             "single node) where configured; a multi-node deployment needs an external database."
+             if durable and in_memory else
+             "Persistence is SQLite (single file, single node); a multi-node deployment "
              "needs an external database." if durable else
              "Prototype persistence is in-memory unless a durable backend is configured; "
              "data is lost on restart."),

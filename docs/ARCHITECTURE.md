@@ -23,8 +23,9 @@ flowchart TB
 
     subgraph Reasoning
         PROV[ReasoningProvider]
-        DET[DeterministicProvider\n+ Knowledge Packs]
-        LLM[LLMProvider\nClaude/OpenAI/Azure]
+        LLM[LLMProvider - primary\nClaude/OpenAI/Azure\nanalysis, plan, design, code+tests]
+        GATEC[Codegen sandbox gate\nscan, compile, own tests\n+1 repair pass]
+        DET[DeterministicProvider - fallback\n+ Knowledge Packs]
     end
 
     subgraph Agents
@@ -36,23 +37,28 @@ flowchart TB
         TST[TestGenerator]
         DOC[DocGenerator]
         VAL[Validator]
+        REP[Repair]
         SUM[SummaryWriter]
     end
 
     subgraph Tools
         FS[ArtifactStore\nsandboxed writes]
-        RUN[CodeRunner\ncompile + unittest]
+        SCAN[static_check\nAST safety scan]
+        RUN[CodeRunner\ncompile + isolated unittest]
     end
 
     CLI --> ORCH
     ORCH <--> BB
     ORCH --> GATE
     ORCH --> AN --> DEC
-    ORCH --> ARCH & IMP & COD & TST & DOC & VAL & SUM
-    AN & DEC & ARCH & IMP & COD & TST & DOC & VAL & SUM --> PROV
-    PROV --> DET
-    PROV -.-> LLM
-    COD & TST & DOC --> FS
+    ORCH --> ARCH & IMP & COD & TST & DOC & VAL & REP & SUM
+    AN & DEC & ARCH & COD & TST & DOC --> PROV
+    PROV --> LLM
+    LLM --> GATEC
+    LLM -. per-stage fallback .-> DET
+    GATEC --> SCAN & RUN
+    COD & TST & DOC & REP --> FS
+    VAL --> SCAN
     VAL --> RUN
 ```
 
@@ -63,12 +69,16 @@ The orchestrator runs three phases:
 1. **Bootstrap** — `RequirementAnalyst` normalizes the requirement and records an
    explicit assumption for every ambiguity. A **clarification gate** lets a human review.
 2. **Plan** — `TaskDecomposer` produces a DAG; a **plan gate** approves it. The DAG is
-   grouped into *dependency levels* via topological sort, so independent work
-   (e.g. `code` and `docs`) sits in the same level and could run concurrently.
+   grouped into *dependency levels* via topological sort, and independent work
+   (e.g. `code` and `docs`) in the same level runs concurrently (a thread per task;
+   `--sequential` disables it). A model-authored plan is checked (known categories, required
+   stages, acyclic) and normalized so validation depends on the work it reports on.
 3. **Execute & Accept** — the orchestrator walks the levels, dispatching each task to the
    agent registered for its `category`. Every task is wrapped in **retry-with-backoff**;
    a persistent failure **degrades** optional tasks (docs, impact) or **halts** on required
-   ones. A final **acceptance gate** reviews the validation report.
+   ones. If validation finds a repairable gap (missing contract or docs), the **Repair**
+   agent fixes it and validation re-runs (bounded). A final **acceptance gate** reviews
+   the validation report; in auto mode a failing report is never accepted.
 
 ```mermaid
 sequenceDiagram
@@ -85,7 +95,10 @@ sequenceDiagram
         O->>A: run task (retry on failure)
         A->>B: read inputs / write outputs
     end
-    O->>A: validate (compile + run tests)
+    O->>A: validate (scan, compile, run tests)
+    opt repairable gap
+        O->>A: repair, then re-validate (bounded)
+    end
     O->>H: acceptance gate
     O->>B: persist result.json + summary
 ```
@@ -112,19 +125,22 @@ design, impact ──► code ──► tests ──┐
 | **Perceive → decide → act agents** | Each agent observes state, chooses an action, and records *why* — the property that makes them agents, not functions; decisions are auditable. |
 | **Validation feedback loop** | Repairable findings flow *back* into generation (bounded), so recovery is agent-driven self-correction, not linear retry. |
 | **Blackboard coordination** | Agents never call each other; all state flows through one inspectable object, making runs auditable and agents independently testable. |
-| **Provider seam** | A small typed interface (`ReasoningProvider`) lets the same agents run offline (deterministic) or on a live LLM without changing orchestration. |
-| **Deterministic default** | Zero dependencies / API keys → reproducible, gradable runs; the mandatory use case produces identical, reviewable output every time. |
+| **Provider seam** | A small typed interface (`ReasoningProvider`) lets the same agents run on a live LLM (primary) or offline (fallback) without changing orchestration. |
+| **LLM-first, never LLM-dependent** | The model drives every stage including code generation; each stage falls back to the deterministic engine on error, so a run always completes and CI can test the whole pipeline without a key. |
+| **Sandbox gate for model code** | Model-authored code is scanned, compiled and its own tests run before acceptance, with one repair pass fed by the real failure; then the verified template. |
+| **Scan before execute** | The AST safety scan runs before any generated code is executed, in both the codegen gate and the Validator. |
 | **Knowledge packs** | Domain expertise is isolated and pluggable; adding a domain is a new pack, not an orchestrator change. |
-| **DAG by dependency level** | Demonstrates real sequencing + potential parallelism, not linear execution. |
+| **DAG by dependency level** | Real sequencing and concurrent execution of independent tasks, not linear execution. |
 | **Retry / degrade / halt** | Concrete error handling and recovery with a clear required-vs-optional policy. |
 | **Validator runs the tests** | Outputs are *verified* (compiled + executed), not merely produced. |
 | **Sandboxed artifact writes** | Path-traversal guard is a real guardrail for safe execution. |
-| **HITL gates** | Controlled autonomy: agents act; humans approve at defined checkpoints. |
+| **HITL gates** | Controlled autonomy: agents act; humans approve at defined checkpoints; the interactive gate fails closed. |
 
 ## 6. Extension points
 
 - **New domain:** add a `KnowledgePack` and register it in `DeterministicProvider._PACKS`.
 - **New capability/agent:** add an `Agent` and one entry in `agents.DAG_AGENTS`; add a task
   to the decomposer with the matching `category`.
-- **Live model:** set `--provider claude` (or `openai`); the model drives analysis,
-  decomposition, and design, with per-stage deterministic fallback and usage metrics.
+- **Live model (primary):** set `--provider claude` (or `openai`); the model drives
+  analysis, decomposition, design and code + test generation, with per-stage deterministic
+  fallback and usage metrics (tokens, latency, cost, retries, fallbacks).

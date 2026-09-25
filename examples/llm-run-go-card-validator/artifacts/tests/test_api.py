@@ -1,117 +1,110 @@
-"""End to end tests for the WSGI API via direct in-process invocation."""
-import io
+"""End-to-end HTTP API tests."""
 import json
-import os
-import tempfile
+import threading
 import unittest
+from http.client import HTTPConnection
 
-from cardvalidator import create_app, Config, Storage
-from cardvalidator import validation
-
-
-def call(app, method, path, payload=None):
-    body = json.dumps(payload).encode("utf-8") if payload is not None else b""
-    environ = {
-        "REQUEST_METHOD": method,
-        "PATH_INFO": path,
-        "CONTENT_LENGTH": str(len(body)),
-        "wsgi.input": io.BytesIO(body),
-    }
-    result = {}
-
-    def start_response(status, headers):
-        result["status"] = status
-        result["headers"] = headers
-
-    body_iter = app(environ, start_response)
-    data = b"".join(body_iter)
-    parsed = json.loads(data) if data else None
-    return result["status"], parsed
+from cardvalidator.server import run_server
 
 
-class ApiTests(unittest.TestCase):
-    def setUp(self):
-        fd, self.db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        self.config = Config(
-            allowed_currencies={"USD", "EUR"},
-            min_amount_cents=1, max_amount_cents=1000000,
-            daily_limit_cents=5000, monthly_limit_cents=10000,
-            idempotency_ttl_seconds=3600, db_path=self.db_path,
-        )
-        self.storage = Storage(self.db_path)
-        self.app = create_app(self.config, self.storage)
-        self.valid_payload = {
-            "card_number": "4111111111111111", "cvv": "123",
-            "expiry_month": 12, "expiry_year": 2099,
-            "amount_cents": 1000, "currency": "USD",
+class TestAPI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd, cls.ctx = run_server(host="127.0.0.1", port=0)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def _conn(self):
+        return HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+    def _post(self, path, payload):
+        conn = self._conn()
+        body = json.dumps(payload)
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        return resp.status, data
+
+    def _get(self, path):
+        conn = self._conn()
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        conn.close()
+        return resp.status, data
+
+    def test_health(self):
+        status, data = self._get("/healthz")
+        self.assertEqual(status, 200)
+        self.assertIn("ok", data)
+
+    def test_ready(self):
+        status, _ = self._get("/readyz")
+        self.assertEqual(status, 200)
+
+    def test_validate_approved(self):
+        txn = {
+            "transaction_id": "api-tx1",
+            "card_number": "4111111111111111",
+            "expiry_month": 12,
+            "expiry_year": 2099,
+            "cvv": "123",
+            "amount": 50.0,
+            "currency": "USD",
+            "merchant_id": "m1",
         }
-
-    def tearDown(self):
-        try:
-            os.remove(self.db_path)
-        except OSError:
-            pass
-
-    def test_healthz(self):
-        status, body = call(self.app, "GET", "/healthz")
-        self.assertEqual(status, "200 OK")
-        self.assertEqual(body["status"], "ok")
-
-    def test_readyz(self):
-        status, body = call(self.app, "GET", "/readyz")
-        self.assertEqual(status, "200 OK")
-        self.assertTrue(body["checks"]["sqlite"])
-
-    def test_valid_transaction_approved(self):
-        status, body = call(self.app, "POST", "/v1/transactions/validate", self.valid_payload)
-        self.assertEqual(status, "200 OK")
-        self.assertEqual(body["status"], "approved")
-        self.assertEqual(body["card_network"], "visa")
-        self.assertEqual(body["masked_pan"], "411111*******1111")
-
-    def test_invalid_luhn_rejected(self):
-        payload = dict(self.valid_payload, card_number="4111111111111112")
-        status, body = call(self.app, "POST", "/v1/transactions/validate", payload)
-        self.assertEqual(status, "200 OK")
-        self.assertEqual(body["status"], "rejected")
-        self.assertIn("invalid_card_number", body["reasons"])
-
-    def test_expired_card_rejected(self):
-        payload = dict(self.valid_payload, expiry_month=1, expiry_year=2000)
-        status, body = call(self.app, "POST", "/v1/transactions/validate", payload)
-        self.assertEqual(body["status"], "rejected")
-        self.assertIn("expired_card", body["reasons"])
-
-    def test_unsupported_currency_rejected(self):
-        payload = dict(self.valid_payload, currency="XXX")
-        status, body = call(self.app, "POST", "/v1/transactions/validate", payload)
-        self.assertEqual(body["status"], "rejected")
-        self.assertIn("unsupported_currency", body["reasons"])
-
-    def test_blacklist_rejected(self):
-        token_hash = validation.hash_token(self.valid_payload["card_number"])
-        self.storage.add_blacklist(token_hash, "stolen")
-        status, body = call(self.app, "POST", "/v1/transactions/validate", self.valid_payload)
-        self.assertEqual(body["status"], "rejected")
-        self.assertIn("blacklisted", body["reasons"])
+        status, data = self._post("/v1/validate", txn)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["decision"], "APPROVED")
 
     def test_idempotency(self):
-        payload = dict(self.valid_payload, idempotency_key="abc-123")
-        status1, body1 = call(self.app, "POST", "/v1/transactions/validate", payload)
-        status2, body2 = call(self.app, "POST", "/v1/transactions/validate", payload)
-        self.assertEqual(body1, body2)
+        txn = {
+            "transaction_id": "api-tx-idem",
+            "card_number": "4111111111111111",
+            "expiry_month": 12,
+            "expiry_year": 2099,
+            "cvv": "123",
+            "amount": 25.0,
+            "currency": "USD",
+            "merchant_id": "m1",
+        }
+        _, data1 = self._post("/v1/validate", txn)
+        _, data2 = self._post("/v1/validate", txn)
+        self.assertEqual(data1, data2)
 
-    def test_daily_limit_flagged(self):
-        payload = dict(self.valid_payload, amount_cents=4000)
-        call(self.app, "POST", "/v1/transactions/validate", payload)
-        status, body = call(self.app, "POST", "/v1/transactions/validate", payload)
-        self.assertEqual(body["status"], "flagged")
-        self.assertIn("daily_limit_exceeded", body["reasons"])
+    def test_blacklist_then_decline(self):
+        status, _ = self._post("/v1/blacklist", {"card_number": "4000000000000002", "reason": "test"})
+        self.assertEqual(status, 200)
+        txn = {
+            "transaction_id": "api-tx-blk",
+            "card_number": "4000000000000002",
+            "expiry_month": 12,
+            "expiry_year": 2099,
+            "cvv": "123",
+            "amount": 10.0,
+        }
+        _, data2 = self._post("/v1/validate", txn)
+        self.assertIn("BLACKLISTED", data2["reason_codes"])
 
-    def test_bad_request(self):
-        status, body = call(self.app, "POST", "/v1/transactions/validate", {"card_number": "x"})
-        self.assertEqual(status, "400 Bad Request")
+    def test_rules_endpoint(self):
+        status, _ = self._get("/v1/rules")
+        self.assertEqual(status, 200)
+
+    def test_metrics_endpoint(self):
+        status, _ = self._get("/metrics")
+        self.assertEqual(status, 200)
+
+    def test_reload_rules(self):
+        status, data = self._post("/v1/rules/reload", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "reloaded")
 
 
 if __name__ == "__main__":

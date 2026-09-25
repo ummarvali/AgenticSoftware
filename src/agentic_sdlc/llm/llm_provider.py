@@ -1,17 +1,16 @@
 """LLM-first reasoning provider with a deterministic reliability fallback.
 
-The **reasoning** stages (analysis, decomposition, design) are model-driven — this is
-what makes the system a genuine LLM agent. Each call is guarded by:
+Every stage is model-driven: requirement analysis, task decomposition, architecture
+design, and **generation** — the model authors the whole project (code + tests) from
+the requirement. Each call is guarded by:
 
-* a per-call **timeout** and bounded **retries with backoff**,
-* strict **JSON parsing + validation** of the model's output, and
+* a per-call **timeout** and bounded **retries with backoff** (truncation is not retried
+  at the same ceiling),
+* lenient JSON parsing with **schema/shape validation** of the model's output,
+* for generation, a **sandbox gate** — static safety scan, compile, run the model's own
+  tests — with **one repair pass** that feeds the real failure back to the model, and
 * a **per-stage fallback** to :class:`DeterministicProvider` if the model errors or
-  returns something invalid — so a run always completes.
-
-The **generation** stages (code/tests/docs) intentionally use the verified knowledge
-packs so the emitted URL shortener is guaranteed to compile and pass its tests. That is
-a deliberate reliability decision (an SRE trades a little novelty for a demo that never
-breaks), and it is documented as such — not a hidden limitation.
+  returns something invalid — so a run always completes, and the record says so.
 """
 
 from __future__ import annotations
@@ -25,10 +24,9 @@ import time
 from typing import Any, Callable
 
 from agentic_sdlc.llm.base import ReasoningProvider
-from agentic_sdlc.llm.client import CallRecord, LLMClient, MetricsCollector
+from agentic_sdlc.llm.client import CallRecord, LLMClient, MetricsCollector, TruncatedOutput
 from agentic_sdlc.llm.deterministic import DeterministicProvider
 from agentic_sdlc.models import (
-
     AnalysisResult,
     Ambiguity,
     ApiEndpoint,
@@ -56,6 +54,7 @@ def load_prompt(stage: str) -> str:
         raise FileNotFoundError(f"prompt for stage '{stage}' not found: {path}")
     return path.read_text(encoding="utf-8").strip()
 
+
 _KNOWN_CATEGORIES = {
     "design", "codebase_impact", "code", "tests", "docs", "validate", "summary",
 }
@@ -75,11 +74,12 @@ def _to_int(value, default: int) -> int:
 # Output CEILINGS per stage — not budgets. A ceiling costs nothing (you pay for tokens the
 # model generates, not for the room it is allowed), so they are set at the model's real
 # capacity. Models that reason before answering consume part of this room, and a legitimate
-# run must never be cut off by it. Anything above 8192 streams (see client.py); a model that
-# rejects a ceiling as too large is retried with a smaller one (client._call_with_ceiling).
+# run must never be cut off by it. On the Anthropic client anything above 8192 streams; a
+# model that rejects a ceiling as too large is retried with a smaller one
+# (client._call_with_ceiling).
 _MAX_TOKENS = {"analyze": 16000, "decompose": 32000, "design": 32000, "codegen": 64000}
-# Wall-clock ceilings per stage, generous for the same reason. Streaming keeps the connection
-# alive, so these only catch a genuinely hung request.
+# Per-request timeouts (the SDK applies them to connect/read), generous for the same reason.
+# Streaming keeps the connection alive, so these only catch a genuinely hung request.
 _TIMEOUTS = {"analyze": 300.0, "decompose": 600.0, "design": 600.0, "codegen": 1800.0}
 
 
@@ -102,22 +102,68 @@ def _analysis_context(analysis: AnalysisResult) -> str:
 
 
 def _coerce_json(text: str) -> dict:
-    """Parse JSON from a model reply, tolerating code fences, surrounding prose, and
-    raw control characters inside strings (``strict=False``: models emitting source
-    code — Go, Makefiles, YAML — often leave literal tabs/newlines unescaped)."""
+    """Parse JSON from a model reply, tolerating an outer code fence, surrounding prose,
+    and raw control characters inside strings (``strict=False``: models emitting source
+    code — Go, Makefiles, YAML — often leave literal tabs/newlines unescaped).
+
+    Only the *outer* fence is stripped: generated files (a README, a Go file) routinely
+    contain their own fenced blocks, so splitting on every fence would corrupt them."""
+
     s = text.strip()
-    if s.startswith("```"):
-        parts = s.split("```")
-        s = parts[1] if len(parts) >= 2 else s
-        if s.lstrip().lower().startswith("json"):
-            s = s.lstrip()[4:]
     try:
         return json.loads(s, strict=False)
     except Exception:
-        start, end = s.find("{"), s.rfind("}")
-        if start != -1 and end > start:
-            return json.loads(s[start:end + 1], strict=False)
-        raise
+        pass
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+        try:
+            return json.loads(s, strict=False)
+        except Exception:
+            pass
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end > start:
+        return json.loads(s[start:end + 1], strict=False)
+    raise ValueError("no JSON object found")
+
+
+def _enforce_plan_invariants(tasks: list[Task]) -> None:
+    """Make a model-authored plan safe to execute, or reject it.
+
+    Required: at least one code, tests, validate and summary task. Then every validate
+    task is made to depend on every design/impact/code/tests/docs task that is not
+    already downstream of it (so validation sees the work it reports on), and every
+    summary task on every validate task. Edges that would create a cycle are skipped,
+    so a plan the model deliberately sequenced (e.g. a load test after validation) is
+    kept as the model wrote it."""
+
+    missing = {"code", "tests", "validate", "summary"} - {t.category for t in tasks}
+    if missing:
+        raise ValueError(f"LLM plan lacks {', '.join(sorted(missing))} task(s)")
+    by_id = {t.id: t for t in tasks}
+
+    def ancestors(tid: str) -> set[str]:
+        seen: set[str] = set()
+        stack = list(by_id[tid].depends_on) if tid in by_id else []
+        while stack:
+            d = stack.pop()
+            if d in seen or d not in by_id:
+                continue
+            seen.add(d)
+            stack.extend(by_id[d].depends_on)
+        return seen
+
+    def link(downstream: list[Task], upstream_categories: set[str]) -> None:
+        for d in downstream:
+            for u in tasks:
+                if (u.category in upstream_categories and u.id != d.id
+                        and u.id not in d.depends_on and d.id not in ancestors(u.id)):
+                    d.depends_on.append(u.id)
+
+    link([t for t in tasks if t.category == "validate"],
+         {"design", "codebase_impact", "code", "tests", "docs"})
+    link([t for t in tasks if t.category == "summary"], {"validate"})
 
 
 class BudgetExceeded(RuntimeError):
@@ -177,10 +223,11 @@ class LLMProvider(ReasoningProvider):
             raise BudgetExceeded(f"{stage}: LLM cost budget exhausted (~${cost:.4f} >= ${self._max_cost_usd:.2f})")
 
     def _ask_json(self, stage: str, system: str, user: str) -> dict[str, Any]:
-        self._budget_check(stage)
         last_error: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
+            self._budget_check(stage)          # every attempt, not just the first
             start = time.time()
+            resp = None
             try:
                 resp = self._client.complete(system, user, json_mode=True,
                                              timeout=_TIMEOUTS.get(stage, self._timeout),
@@ -197,13 +244,20 @@ class LLMProvider(ReasoningProvider):
                 return data
             except Exception as exc:  # noqa: BLE001 - retry on any provider/JSON error
                 last_error = exc
+                # Failed attempts still cost money: count their tokens when known, so the
+                # cost estimate and the circuit breaker see them.
+                src = resp if resp is not None else exc
                 self.metrics.record(CallRecord(
-                    stage, getattr(self._client, "model", "unknown"), 0, 0,
+                    stage, getattr(self._client, "model", "unknown"),
+                    getattr(src, "prompt_tokens", 0) or 0,
+                    getattr(src, "completion_tokens", 0) or 0,
                     round(time.time() - start, 3), error=str(exc)[:200],
                 ))
+                if isinstance(exc, TruncatedOutput):
+                    break                      # same ceiling would truncate again
                 if attempt < self._max_retries and self._backoff:
                     time.sleep(self._backoff * attempt)
-        raise RuntimeError(f"LLM stage '{stage}' failed after retries: {last_error}")
+        raise RuntimeError(f"LLM stage '{stage}' failed: {last_error}")
 
     def _with_fallback(self, stage: str, llm_fn: Callable[[], Any],
                        fallback_fn: Callable[[], Any]) -> Any:
@@ -212,13 +266,17 @@ class LLMProvider(ReasoningProvider):
         except Exception as exc:  # noqa: BLE001 - degrade to deterministic
             self.metrics.record(CallRecord(
                 stage, getattr(self._client, "model", "unknown"), 0, 0, 0.0,
-                fallback=True, error=str(exc)[:200],
+                fallback=True, error=str(exc)[:200], event=True,
             ))
             return fallback_fn()
 
     # -- ReasoningProvider API -------------------------------------------- #
 
     def analyze_requirement(self, requirement: Requirement) -> AnalysisResult:
+        # Analysis starts a run: never carry a previous run's generated bundle over.
+        with self._bundle_lock:
+            self._bundle, self._bundle_failed = None, False
+
         def llm() -> AnalysisResult:
             system = load_prompt("analyze")
             user = requirement.text
@@ -257,10 +315,13 @@ class LLMProvider(ReasoningProvider):
                 category=t.get("category", "generic"),
                 priority=_to_int(t.get("priority", 100), 100),
             ) for t in data.get("tasks", [])]
-            graph = TaskGraph(tasks=tasks)
-            # Validation guardrail: reject unknown categories or a cyclic/empty plan.
+            # Validation guardrail: reject unknown categories, a plan missing a required
+            # stage, dangling dependencies or a cycle; make validation/summary depend on
+            # the work they report on.
             if not tasks or any(t.category not in _KNOWN_CATEGORIES for t in tasks):
                 raise ValueError("LLM plan has invalid categories")
+            _enforce_plan_invariants(tasks)
+            graph = TaskGraph(tasks=tasks)
             graph.validate_acyclic()
             return graph
 
@@ -345,6 +406,7 @@ class LLMProvider(ReasoningProvider):
                 self.metrics.record(CallRecord(
                     "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
                     error="sandbox rejected bundle; repair pass: " + output[-160:].replace("\n", " "),
+                    event=True,
                 ))
                 files = self._llm_repair_files(analysis, architecture, files, output)
                 if not files or not any(f.path.startswith("tests/") for f in files):
@@ -362,7 +424,7 @@ class LLMProvider(ReasoningProvider):
             self._bundle_failed = True
             self.metrics.record(CallRecord(
                 "codegen", getattr(self._client, "model", "unknown"), 0, 0, 0.0,
-                fallback=True, error=str(exc)[:200],
+                fallback=True, error=str(exc)[:200], event=True,
             ))
 
     def _llm_generate_files(
@@ -382,8 +444,8 @@ class LLMProvider(ReasoningProvider):
         for f in data.get("files", []):
             path = str(f.get("path", "")).strip()
             content = f.get("content", "")
-            if path and content:
-                files.append(Artifact(path, content, self._infer_kind(path)))
+            if path and (content or path.endswith("__init__.py")):
+                files.append(Artifact(path, content or "", self._infer_kind(path)))
         return files
 
     def _llm_repair_files(
@@ -405,8 +467,8 @@ class LLMProvider(ReasoningProvider):
         for f in data.get("files", []):
             path = str(f.get("path", "")).strip()
             content = f.get("content", "")
-            if path and content:
-                repaired.append(Artifact(path, content, self._infer_kind(path)))
+            if path and (content or path.endswith("__init__.py")):
+                repaired.append(Artifact(path, content or "", self._infer_kind(path)))
         return repaired
 
     @staticmethod
@@ -420,18 +482,23 @@ class LLMProvider(ReasoningProvider):
         return "code"
 
     def _validate_bundle(self, files: list[Artifact]) -> tuple[bool, str]:
-        """Write the bundle to a temp dir, compile it, and run its tests.
+        """Write the bundle to a temp dir, scan it, compile it, and run its tests.
 
+        Nothing is executed if the static safety scan finds a high-severity issue.
         Returns (ok, output) so a rejection can be fed back to the model."""
 
         import tempfile
-        from pathlib import Path
 
         from agentic_sdlc.tools import ArtifactStore, CodeRunner
+        from agentic_sdlc.tools.static_check import scan_tree
 
         with tempfile.TemporaryDirectory() as tmp:
             store = ArtifactStore(tmp)
             store.write_all(files)
+            high = [f for f in scan_tree(Path(tmp)) if f.severity == "high"]
+            if high:
+                return False, "static safety scan (code not executed):\n" + "\n".join(
+                    str(f) for f in high[:10])
             runner = CodeRunner()
             py = [Path(tmp) / f.path for f in files if f.path.endswith(".py")]
             failed = [r for r in runner.compile_python(py) if not r.ok]

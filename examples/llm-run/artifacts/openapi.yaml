@@ -2,45 +2,49 @@ openapi: 3.0.3
 info:
   title: Generated API
   version: 1.0.0
-  description: Endpoints implemented by the generated prototype slice.
+  description: "Synthesized by the Repair agent from the API design; lists only endpoints the generated slice serves."
 paths:
-  /api/v1/urls:
+  "/api/urls":
     post:
-      summary: Create a short URL from a long URL, optional custom alias and TTL
+      summary: "Create a shortened URL, optional custom alias, expiration, and API key"
       responses:
-        "201": { description: OK }
-  /{short_code}:
+        "201":
+          description: "{ \"short_code\": \"aZ3kT9\", \"short_url\": \"https://short.ly/aZ3kT9\", \"long_url\": \"https://example.com/very/long/path\", \"expires_at\": \"2025-12-31T00:00:00Z\", \"created_at\": \"2024-06-01T12:00:00Z\" }"
+  "/{short_code}":
+    parameters:
+      - name: "short_code"
+        in: path
+        required: true
+        schema: { type: string }
     get:
-      summary: Redirect to the original long URL and asynchronously record a click event
+      summary: "Redirect to the original long URL and asynchronously record a click event"
       responses:
-        "302": { description: OK }
-  /api/v1/urls/{short_code}:
+        "302":
+          description: "HTTP 302 redirect with Location header set to long_url; body empty"
+  "/api/urls/{short_code}/analytics":
+    parameters:
+      - name: "short_code"
+        in: path
+        required: true
+        schema: { type: string }
     get:
-      summary: Get metadata for a short URL (owner or public info)
+      summary: "Retrieve click analytics summary and recent events for a short URL"
       responses:
-        "200": { description: OK }
-  /api/v1/urls/{short_code}/analytics:
+        "200":
+          description: "{ \"short_code\": \"aZ3kT9\", \"total_clicks\": 1523, \"daily\": [{\"day\": \"2024-06-01\", \"clicks\": 42}], \"recent_events\": [{\"clicked_at\": \"2024-06-01T12:05:00Z\", \"referrer\": \"https://google.com\", \"device\": \"mobile\", \"geo_country\": \"US\"}] }"
+  "/api/urls/{short_code}":
+    parameters:
+      - name: "short_code"
+        in: path
+        required: true
+        schema: { type: string }
     get:
-      summary: Retrieve aggregated analytics for a short URL
+      summary: "Retrieve metadata for a short URL (owner, expiration, creation time) without redirecting"
       responses:
-        "200": { description: OK }
-  /api/v1/urls/{short_code}:
+        "200":
+          description: "{ \"short_code\": \"aZ3kT9\", \"long_url\": \"https://example.com/...\", \"created_at\": \"...\", \"expires_at\": \"...\", \"owner\": \"key-label-or-null\", \"click_count\": 1523 }"
     delete:
-      summary: Deactivate (soft-delete) a short URL; owner-only if authenticated
+      summary: "Delete/deactivate a short URL (requires matching API key if one was set at creation)"
       responses:
-        "200": { description: OK }
-  /api/v1/auth/register:
-    post:
-      summary: Register a new user and receive an API key
-      responses:
-        "201": { description: OK }
-  /api/v1/auth/login:
-    post:
-      summary: Authenticate and retrieve/rotate API key
-      responses:
-        "200": { description: OK }
-  /openapi.json:
-    get:
-      summary: Serve OpenAPI specification for API documentation
-      responses:
-        "200": { description: OK }
+        "200":
+          description: "{ \"short_code\": \"aZ3kT9\", \"status\": \"deleted\" }"

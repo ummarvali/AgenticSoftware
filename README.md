@@ -37,10 +37,13 @@ python3 -m agentic_sdlc --provider claude --file examples/greenfield.txt
 python3 -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
 ```
 
-A run takes ~4–6 minutes and ~$0.10–0.16. The model analyses the requirement, plans a
-20–30-task graph, designs the service, writes the code **and** its tests; the code is
-accepted only after it compiles and its own tests pass in a sandbox (one repair pass with
-the real error output if they don't). The result lands in `runs/<run-id>/`, ending with
+A run takes ~4–6 minutes and costs roughly $0.25–0.40 (Claude Sonnet 5 at its $2 / $10 per
+million-token list price; the per-call tokens and the estimate are in `result.json`). The
+model analyses the requirement, plans a 15–30-task graph, designs the service, writes the
+code **and** its tests; the code is accepted only after it passes a static safety scan,
+compiles, and its own tests pass in a sandbox (one repair pass with the real error output
+if they don't). The API contract and README are then synthesized from the model's design
+by the Repair agent if the model's bundle left them out. The result lands in `runs/<run-id>/`, ending with
 `artifacts/ENGINEERING_SUMMARY.md`. **No key is committed anywhere in this repository.**
 
 **No key to hand? The evidence is already recorded.** Three live runs, produced by the
@@ -48,9 +51,9 @@ final code, are checked in exactly as they came out of `runs/`:
 
 | What you want to see | Where |
 | --- | --- |
-| The mandatory URL shortener, **authored by the model** and sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
+| The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
-| The hardest case: a **Go** target — the design records Go, the validated slice is Python, and the **codegen repair loop** fixed a bundle the sandbox first rejected | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) — see `metrics.llm.calls` in `result.json` |
+| The hardest case: a **Go** target — the design records Go, the validated slice is Python (stated as a limitation), 15 model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
 | The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
 | How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
 
@@ -62,7 +65,7 @@ with the deterministic engine in place of the model (this is also what CI runs):
 
 ```bash
 export PYTHONPATH=src                                   # PowerShell: $env:PYTHONPATH = "src"
-python3 -m unittest discover -s tests                   # 54 tests, OK
+python3 -m unittest discover -s tests                   # 66 tests, OK
 python3 -m agentic_sdlc --file examples/greenfield.txt  # plan, build, validate, report — offline
 python3 scripts/evaluate.py                             # scorecard: 6 offline scenarios + the 3 recorded live runs
 ```
@@ -84,8 +87,6 @@ live mode) and `docker build -t url-shortener demo` (the demo service).
 
 ## How I approached this — candidate notes
 
-> Written in the first person, because the brief asks for the candidate's approach.
-
 1. **I read the brief as an SRE problem, not a chatbot problem.** "Controlled autonomy" and
    "validation and risk control" are reliability requirements. So the first design decision
    was: the system must *verify its own output* (compile + run the tests it wrote) before a
@@ -101,10 +102,12 @@ live mode) and `docker build -t url-shortener demo` (the demo service).
    log, a run is auditable end to end (every agent decision is logged with its rationale),
    each agent is unit-testable alone, and adding a concurrent executor for independent
    tasks needed only a lock on the log.
-4. **I made the URL shortener boring on purpose.** Standard library only, base62 ids,
-   in-memory + SQLite stores, a WSGI adapter, an OpenAPI contract, unit + integration
-   tests, a container image. The interesting engineering is in the agent system; the
-   deliverable had to be something a reviewer can run in ten seconds.
+4. **The model builds the service; my job was the gate that proves it runs.** Model-authored
+   code is accepted only after a static safety scan, compilation and its own tests pass in
+   a sandbox, with one repair pass fed by the real error. The deterministic template
+   behind it is deliberately boring — standard library, base62 ids, in-memory or SQLite,
+   WSGI, OpenAPI, unit + integration tests, a container image — so the fallback is always
+   runnable in ten seconds.
 5. **I wrote down what I did not do.** Predictable sequential codes, synchronous click
    recording, a heuristic brownfield scan, console-only approval gates — see §8–§9. In a
    prototype the trade-offs matter more than the feature count.
@@ -120,9 +123,11 @@ The reasoning layer is a swappable seam (`ReasoningProvider`), so the *same* age
 orchestration run on any brain:
 
 - **LLM backend (Claude / OpenAI / Azure OpenAI / any OpenAI-compatible endpoint)** — the
-  model drives requirement **analysis, task decomposition, and architecture design**. It is
-  used automatically when a key is present (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-  `AZURE_OPENAI_ENDPOINT`, or `OPENAI_BASE_URL`) — no code change.
+  primary mode: the model drives requirement **analysis, task decomposition, architecture
+  design, and code + test generation**. It is used automatically when a key is present
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, or `OPENAI_BASE_URL`) — no
+  code change. `ANTHROPIC_MODEL` / `OPENAI_MODEL` pin the model; otherwise the first Sonnet
+  model the Anthropic account can list is used (the recorded runs used `claude-sonnet-5`).
 - **Deterministic engine (default when no key, and the fallback for every LLM stage)** — a
   reproducible rule engine that **backs each model call**: on a timeout, error, or malformed
   response the pipeline degrades to it per-stage, so a run never half-completes.
@@ -261,7 +266,7 @@ python3 -m agentic_sdlc --provider openai --file examples/greenfield.txt
 ```
 
 A circuit breaker guards against runaway spend: `AGENTIC_LLM_MAX_CALLS` (default 200) and
-`AGENTIC_LLM_MAX_COST_USD` (default 10.00) — far above a legitimate run (4–8 calls, cents);
+`AGENTIC_LLM_MAX_COST_USD` (default 10.00) — far above a legitimate run (4–8 calls, well under a dollar);
 if tripped, remaining stages degrade to the deterministic engine and the record says so.
 
 Keys are read **only** from the environment and are never written to disk or to
@@ -273,8 +278,10 @@ run: `python scripts/snapshot_run.py --name llm-run` (copies the latest run and 
 anything key-shaped).
 
 **CLI flags:** `--file <path>`, `--repo <path>` (brownfield scan), `--interactive`,
-`--provider auto|deterministic|claude|openai`, `--inject-fault <category[:N]>`, `--sequential`
-(disable in-level concurrency), `--quiet`, `--json`.
+`--provider auto|deterministic|claude|anthropic|openai|llm`, `--inject-fault <category[:N]>`,
+`--sequential` (disable in-level concurrency), `--output-root <dir>`, `--quiet`, `--json`
+(machine-readable result on stdout, logs suppressed). Exit status is 0 only for a validated,
+accepted run — usable as a CI step.
 
 Every run writes to `runs/<run-id>/`:
 `artifacts/` (the generated project) + `result.json` (full machine-readable record) +
@@ -304,6 +311,11 @@ and `examples/llm-run*/` (three recorded live-model runs, copied from `runs/` by
 
 ## 3. The mandatory use case, end to end
 
+The transcript below is the **offline fallback** (no key), because it is short and
+reproducible. The same requirement on a live model — 20+ tasks, model-authored code, a
+sandbox gate — is recorded in [`examples/llm-run/`](examples/llm-run/): read its
+`artifacts/ENGINEERING_SUMMARY.md` and `result.json`.
+
 ```
 $ python -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
 
@@ -326,7 +338,8 @@ Artifacts      : 15 files -> runs\...\artifacts
 Validation     : 5/5 checks passed (PASS)
 ```
 
-**What it generated** (a real, runnable service — standard library only):
+**What the fallback generated** (a real, runnable service — standard library only; this is
+what is committed as [`demo/`](demo/)):
 
 | Artifact | Purpose |
 | --- | --- |
@@ -335,7 +348,7 @@ Validation     : 5/5 checks passed (PASS)
 | `url_shortener/service.py` | validation, idempotent shorten, aliases, expiry, resolve, stats |
 | `url_shortener/analytics.py` | click aggregation (totals, top referrers) |
 | `url_shortener/api.py` | WSGI HTTP adapter (shorten / redirect / stats / health) |
-| `url_shortener/server.py` | dev server entrypoint |
+| `url_shortener/server.py` | server entrypoint; `SHORTENER_STORE=sqlite` + `SHORTENER_DB_PATH` select the durable backend |
 | `openapi.yaml` | the API contract |
 | `tests/test_*.py` | unit **and** integration tests (run by the validator) |
 | `README.md`, `docs/ARCHITECTURE.md`, `ENGINEERING_SUMMARY.md` | documentation |
@@ -425,10 +438,16 @@ the **greenfield**, **brownfield**, and **ambiguous** cases, plus the error-reco
 Highlights:
 
 - **Greenfield** → full URL-shortener package, `5/5` checks pass.
-- **Brownfield** ("...existing...") → an extra `impact` task is injected *before* `code`; the
-  summary includes a Codebase-Impact section; `--repo <path>` scans a real repo.
-- **Ambiguous** ("Make the app faster.") → surfaces blocking questions with default
-  assumptions and correctly returns **REVIEW NEEDED** rather than a false pass.
+- **Brownfield** ("Add rate limiting to the existing URL shortener…") → an extra `impact`
+  task is injected *before* `code`; `--repo <path>` ranks the repository's files by
+  relevance to the change; the output contains the change itself — a per-client token-bucket
+  limiter (`url_shortener/ratelimit.py`), HTTP 429 on link creation, the contract updated,
+  and its tests — and the evaluator fails the scenario if the limiter is missing.
+- **Ambiguous** ("Make the app faster.") → classified `ambiguous` (low confidence); every open
+  question gets a recorded default assumption shown at the clarification gate; validation
+  first fails 4/5 (no contract), the Repair agent adds it, re-validation passes 5/5. The
+  control against a false "done" is the clarification gate — in `--interactive` mode a human
+  answers or rejects there — not the validator.
 
 ---
 
@@ -453,7 +472,7 @@ AgenticSoftware/
 │  ├─ greenfield.txt / brownfield.txt / ambiguous.txt
 │  ├─ llm-run/                        ★ Recorded live-model run: URL shortener (result.json + artifacts)
 │  ├─ llm-run-inventory/              ★ Recorded live-model run: inventory service
-│  ├─ llm-run-go-card-validator/      ★ Recorded live-model run: non-Python target + codegen repair loop
+│  ├─ llm-run-go-card-validator/      ★ Recorded live-model run: non-Python target (Go) — design vs validated Python slice
 │  └─ README.md
 ├─ scripts/
 │  ├─ demo.py                          One-command narrated demo (all scenarios + monitoring)
@@ -496,14 +515,15 @@ AgenticSoftware/
 │  │  └─ __init__.py
 │  └─ tools/
 │     ├─ filesystem.py                ArtifactStore — sandboxed writes (path-traversal guard)
-│     ├─ code_runner.py               CodeRunner — py_compile + unittest subprocess (credential-scrubbed env)
+│     ├─ code_runner.py               CodeRunner — in-memory compile + isolated (python -I) unittest subprocess, credential-scrubbed env
 │     ├─ static_check.py               AST safety scan: dangerous calls, non-stdlib imports, hard-coded secrets
 │     └─ __init__.py                  ToolBox bundle handed to agents
 └─ tests/
    ├─ test_models.py                  DAG ordering / cycle & dangling-dep guards
    ├─ test_provider.py                Classification & plan-shape correctness
-   ├─ test_tools.py                   Sandbox guard + compilation detection
-   └─ test_orchestrator.py            Full runs, recovery, degrade, and human-halt paths
+   ├─ test_tools.py                   Sandbox guard, compilation detection, static safety scan
+   ├─ test_llm_provider.py            LLM path with a fake client: parsing, fallback, sandbox gate, repair pass, pricing, hardening
+   └─ test_orchestrator.py            Full runs, recovery, degrade, human-halt, compile-failure halt, scan-before-execute
 ```
 
 ---
@@ -512,7 +532,7 @@ AgenticSoftware/
 
 Correctness and output quality are validated at **three** levels:
 
-1. **Framework tests** (`tests/`, 49 cases, `unittest`): classification accuracy, DAG
+1. **Framework tests** (`tests/`, 66 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
    the **LLM provider** (mock-driven: JSON parsing, metrics, per-stage fallback, and
    **code-generation accept + sandbox-validated fallback**), always-on **run metrics**, and
@@ -520,7 +540,10 @@ Correctness and output quality are validated at **three** levels:
    **required-task halt**, **human rejection**, the **validation feedback loop**, and
    **concurrent level execution** (parallel ≡ sequential output; sibling completes before a halt),
    **idempotent agents under a fine-grained plan** (one design, 15 unique artifacts, all 14
-   tasks complete), the **LLM spend circuit breaker**, and **secret scrubbing** for generated code.
+   tasks complete), the **LLM spend circuit breaker**, **secret scrubbing** checked from inside a
+   real generated-test subprocess, **compile failures halting** even across retries, code with
+   a high-severity scan finding **never being executed**, truncation not being retried, and
+   plan invariants (validation must depend on the work it reports on).
 2. **Generated-code tests** (emitted into every run): unit tests (base62 round-trip, service
    rules, both storage backends) and an **integration test** driving the WSGI app end to end
    (shorten → 302 redirect → stats).
@@ -528,7 +551,7 @@ Correctness and output quality are validated at **three** levels:
    wrote — a run only reports `PASS` when the generated tests actually pass.
 
 ```powershell
-$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 54 tests ... OK
+$env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 66 tests ... OK
 ```
 
 4. **Continuous integration** (`.github/workflows/ci.yml`): every push runs the framework
@@ -543,35 +566,38 @@ $env:PYTHONPATH = "src"; python -m unittest discover -s tests -v     # -> Ran 54
 | Risk / trade-off | Mitigation in the system |
 | --- | --- |
 | Generated code could be wrong | Validator compiles + runs tests before acceptance |
-| Generated code could be **unsafe or hygienically bad** (eval/exec/shell=True, pickle, third-party or outdated packages, hard-coded keys) | `tools/static_check.py` AST scan is validation check 5; any high-severity finding fails validation → `REVIEW NEEDED` |
+| Generated code could be **unsafe or hygienically bad** (eval/exec/shell=True, pickle, third-party or outdated packages, hard-coded keys, a file shadowing a stdlib module) | `tools/static_check.py` AST scan (import aliases resolved) runs **before anything is executed** — in the codegen sandbox and in the Validator; a high-severity finding means the code is not run and validation fails |
 | An agent step fails transiently | Retry-with-backoff, then degrade (optional) or halt (required) |
 | A bad/hostile artifact path | `ArtifactStore` rejects any path escaping the sandbox |
 | A runaway generated test hangs the run | Test subprocess has a hard timeout |
-| Over-trusting autonomy | Three human approval gates; rejection halts and saves state |
-| Ambiguous input yields a false "done" | Ambiguous runs return **REVIEW NEEDED**, not PASS |
+| Over-trusting autonomy | Three human approval gates; rejection halts and saves state; the interactive gate **fails closed** (no input = reject); auto mode **never accepts a failing report** at the final gate |
+| Ambiguous input yields a false "done" | Ambiguity is surfaced as explicit default assumptions at the clarification gate (a human answers them in `--interactive`); the repair loop only fixes missing artifacts, never failing tests |
 | **LLM-authored code may not run** | Provider compiles + runs the generated tests in a sandbox; on rejection the sandbox output is fed back to the model for one repair pass; accepts only on pass, else falls back to the verified template |
-| **In-memory store is non-durable** | SQLite backend provided and unit-tested; selectable via env |
+| **In-memory store is non-durable** | SQLite backend provided and unit-tested; `SHORTENER_STORE=sqlite` + `SHORTENER_DB_PATH` select it (`demo/url_shortener/server.py`) |
 | **Predictable sequential codes** | Documented; hashing/random slugs noted as the trade-off |
 | **Synchronous click recording** | Documented; async event pipeline is the scaling path |
 
-The validation *strategy* is layered: static (compile + **AST safety scan**: dangerous calls,
-non-stdlib imports, hard-coded secrets) → dynamic (execute tests) → contract/doc presence →
-risk register → human acceptance gate.
+The validation *strategy* is layered: **AST safety scan** first (dangerous calls, non-stdlib
+imports, hard-coded secrets, stdlib shadowing — nothing runs if it fails) → compile → execute
+the tests in an isolated interpreter → contract/doc presence (existence, not conformance) →
+risks derived from the produced code → human acceptance gate.
 
 ### Fault tolerance — what is enforced
 
 | Failure | Behaviour | Where |
 | --- | --- | --- |
-| Model call errors / times out / returns bad JSON / is truncated at `max_tokens` | bounded retries, then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm` | `llm_provider._ask_json`, `_with_fallback` |
-| Model-authored code fails to compile or its tests fail | rejected in a throwaway sandbox; the failure output is fed back to the model for **one repair pass** (recorded as a `codegen` retry); a second rejection uses the verified template, recorded as a `codegen` fallback | `llm_provider._ensure_bundle`, `_llm_repair_files` |
-| Model plan is invalid (unknown category, cycle, empty) | rejected; deterministic plan used | `decompose` guardrail, `TaskGraph.validate_acyclic` |
+| Model call errors / times out / returns bad JSON | bounded retries (failed attempts' tokens are still counted), then **that stage** falls back to the deterministic engine; the run continues and the fallback is recorded in `metrics.llm` | `llm_provider._ask_json`, `_with_fallback` |
+| Model-authored code fails the scan, compile or its own tests | rejected in a throwaway sandbox; the failure output is fed back to the model for **one repair pass** (recorded as a `codegen` retry event — `metrics.llm.retries`); a second rejection uses the verified template, recorded as a `codegen` fallback | `llm_provider._ensure_bundle`, `_llm_repair_files` |
+| Model plan is invalid (unknown category, missing code/tests/validate/summary, cycle) | rejected; deterministic plan used. A valid plan is normalized so every validate task depends on all the work it reports on, and summary on validation | `llm_provider._enforce_plan_invariants`, `TaskGraph.validate_acyclic` |
+| Generated code does not compile | the Validator raises; the retry re-validates (a failed report is never reused) and the run **halts** for a human with the partial record saved | `ValidatorAgent.act` |
 | Model plan is fine-grained (many `code`/`design` tasks) | agents **perceive** existing work and **decide to reuse** it — one design, one bundle, no duplicate artifacts; every task still completes | `Architect/CodeGenerator/... .decide`, `Blackboard.merge` |
 | An agent task raises | retry with backoff → optional task **degrades** (logged, skipped) / required task **halts** cleanly with the partial run saved | `orchestrator._run_task` |
 | A task fails inside a parallel level | siblings run to completion, then the level halts once | `orchestrator._execute` |
 | Generated tests hang | subprocess hard timeout | `CodeRunner.run_unittests` |
 | Validation finds a repairable gap | Repair agent fixes it, re-validation runs (bounded iterations) | `orchestrator._repair_loop` |
-| LLM spend runs away (runaway plan, retry storm, hostile prompt) | **circuit breaker**, not a budget: `AGENTIC_LLM_MAX_CALLS` (default 200) and `AGENTIC_LLM_MAX_COST_USD` (default 10.00) sit far above a legitimate run (4–8 calls, cents); once tripped, remaining stages degrade to deterministic and the record says so | `llm_provider._budget_check` |
-| Model output hits a ceiling | per-stage output ceilings are set at the model's real capacity (a ceiling costs nothing) and stream; truncation is detected and retried (3 attempts); a model that rejects a ceiling as too large is retried with a smaller one | `llm_provider._MAX_TOKENS`, `client._call_with_ceiling` |
+| LLM spend runs away (runaway plan, retry storm, hostile prompt) | **circuit breaker**, not a budget: `AGENTIC_LLM_MAX_CALLS` (default 200) and `AGENTIC_LLM_MAX_COST_USD` (default 10.00) sit far above a legitimate run (4–8 calls, well under a dollar); once tripped, remaining stages degrade to deterministic and the record says so | `llm_provider._budget_check` |
+| Model output hits a ceiling | per-stage output ceilings are set at the model's real capacity (a ceiling costs nothing) and stream on the Anthropic client; truncation is detected, its tokens counted, and **not** retried at the same ceiling (it would truncate again) — the stage falls back; a model that rejects a ceiling as too large is retried with a smaller one | `llm_provider._MAX_TOKENS`, `client.TruncatedOutput`, `client._call_with_ceiling` |
+| A model or SDK rejects a parameter (`temperature`, `max_tokens` vs `max_completion_tokens`) | the parameter is dropped or renamed and the call retried, instead of failing the stage | `client._call` |
 
 Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
 `--inject-fault code:9` (halt), `examples/ambiguous.txt` (repair loop).
@@ -580,13 +606,13 @@ Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
 
 | Risk | Control in this system | Honest gap |
 | --- | --- | --- |
-| **Hallucinated code** (invented APIs, imports, behaviour) | Model-authored code is written to a throwaway sandbox, **compiled, and its own tests executed** before it is accepted; failure → the sandbox output is returned to the model as a repair brief (one pass); second failure → verified template, recorded as a `codegen` fallback | — |
-| **Hallucinated plan / design** | Plan: strict JSON, task-category allow-list, acyclic check, else deterministic plan. Design: typed parsing. Analysis: every ambiguity becomes an *explicit default assumption* a human sees at the clarification gate, and the **same FRs/NFRs/assumptions are passed to the design and codegen stages** so later stages cannot silently re-open them | — |
-| **Design promises more than the code delivers** | The design prompt pins the **implementation target** (Python standard library, single process, in-memory/SQLite) so the model cannot decide on a stack the slice will not implement — production evolutions go to trade-offs, phrased as prototype-vs-production; the summary computes **design ↔ implementation coverage** (which designed endpoints the generated slice actually serves), the repaired API contract documents only implemented endpoints, standing **risks are derived from the produced slice** (its persistence, its auth) rather than copied from the design, and a requirement naming a non-Python target gets an explicit limitation line | A full Critic agent (semantic design↔code↔tests review) is the next step |
+| **Hallucinated code** (invented APIs, imports, behaviour) | Model-authored code is written to a throwaway sandbox, **scanned, compiled, and its own tests executed** before it is accepted; failure → the sandbox output is returned to the model as a repair brief (one pass); second failure → verified template, recorded as a `codegen` fallback | — |
+| **Hallucinated plan / design** | Plan: schema-checked JSON, task-category allow-list, required stages, validation made to depend on the work, acyclic check, else deterministic plan. Design: typed parsing. Analysis: every ambiguity becomes an *explicit default assumption* a human sees at the clarification gate, and the **same FRs/NFRs/assumptions are passed to the design and codegen stages** so later stages cannot silently re-open them | — |
+| **Design promises more than the code delivers** | The design prompt pins the **implementation target** (Python standard library, single process, in-memory/SQLite) so the model cannot decide on a stack the slice will not implement — production evolutions go to trade-offs, phrased as prototype-vs-production; the summary computes **design ↔ implementation coverage** (which designed endpoints the generated slice actually serves), the repaired API contract documents only implemented endpoints, standing **risks are derived from the produced slice** (its persistence, its auth) rather than copied from the design, a requirement naming a non-Python target gets an explicit limitation line, and every live summary states that individual design decisions are *not* verified against the code | The model's design decisions (e.g. "async queue", "required Idempotency-Key header") are not all implemented by its code; only endpoints, compilation, the scan and the model's own tests are verified. A Critic agent (semantic design↔code↔tests review) is the next step |
 | **Drift within a run** (scope creep, loops) | One output schema per agent; agents cannot add tasks; the DAG bounds the work; `reuse` decisions prevent repeated work; bounded repair iterations; call + cost circuit breaker | — |
 | **Drift over time** (model / prompt changes) | The deterministic suite is a fixed regression baseline; recorded live runs in `examples/llm-run*` are golden snapshots; `scripts/evaluate.py` scores every scenario and runs in CI on every push | Live runs are not re-executed in CI (cost, non-determinism) — they are scored from their recorded `result.json` |
 | **Overreach** (an agent doing more than allowed) | Least privilege by construction: an agent's only tools are a sandboxed file store and a subprocess runner — no shell, no network tool, no git, no deploy. Agents never call each other or the model's tools; the model returns data, Python decides. Three human gates | The sandbox is process-level, not network-isolated (see above) |
-| **Fail-closed by default** | No key → deterministic; bad reply → per-stage fallback; compile failure → halt for a human; any failing check → `REVIEW NEEDED`, never `PASS`; partial runs always persisted | — |
+| **Fail-closed by default** | No key → deterministic; bad reply → per-stage fallback; compile failure → halt for a human; any failing check → `REVIEW NEEDED`, never `PASS`, and auto mode does not accept it; no console input → gate rejects; partial runs always persisted | — |
 
 **Memory.** Working memory is the `Blackboard` — one shared, lock-guarded object per run and
 the single source of truth for every agent. Agents are stateless between runs, and every model
@@ -624,13 +650,15 @@ Enforced:
 - **Secrets** are read only from environment variables, never written to disk, logs,
   `result.json`, or run snapshots (`scripts/snapshot_run.py` scrubs key-shaped strings
   defensively). `.gitignore` excludes `.env`, `*.key`, `secrets.*`.
-- **Generated and model-authored code never sees credentials**: the test subprocess runs
-  with every `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*CREDENTIAL*` variable
-  removed from its environment (`CodeRunner.scrubbed_env`).
+- **Generated and model-authored code does not inherit credentials**: the test subprocess
+  runs in isolated mode (`python -I -B`) with every `*KEY*`, `*TOKEN*`, `*SECRET*`,
+  `*PASSWORD*`, `*CREDENTIAL*` variable removed from its environment
+  (`CodeRunner.scrubbed_env`; a test proves it from inside a real subprocess), and only
+  after the static scan passed.
 - **Artifact writes are confined** to the run's sandbox directory; any path that resolves
   outside it (e.g. `../../etc/passwd`, absolute paths) is rejected (`ArtifactStore`).
-- **Untrusted model output is treated as data**: strict JSON parsing, schema-shaped
-  validation, an allow-list of task categories, and the compile+test gate before any
+- **Untrusted model output is treated as data**: lenient JSON parsing with schema-shaped
+  validation, an allow-list of task categories, and the scan+compile+test gate before any
   model-authored code is accepted. Prompt-injected instructions in a requirement can at
   most produce a plan or code that the guardrails above reject.
 - **Bounded execution**: per-call timeouts, bounded retries, bounded repair iterations,
@@ -640,13 +668,17 @@ Enforced:
 
 Not enforced in this prototype (documented, would be required for production):
 
-- The validation sandbox is a temp directory + subprocess with a timeout and a scrubbed
-  environment — **not** a network-isolated container. Model-authored tests can still
-  reach the network and the host filesystem within the process's permissions. In
-  production this step runs in an ephemeral, no-network container (gVisor/Firecracker).
-- The URL shortener is an **open redirect by design** (any `http(s)` target), has **no
-  authentication or rate limiting**, and uses **predictable sequential codes**; each is
-  listed in the risk register the validator emits.
+- The validation sandbox is a temp directory + isolated-mode subprocess with a timeout and
+  a scrubbed environment — **not** a network-isolated container or a separate OS user.
+  Model-authored tests can still reach the network and the host filesystem within the
+  process's permissions, and on Linux a same-user process can read its parent's
+  environment through `/proc` — so the agent should not run with a key in an environment
+  where that matters. The static scan (which runs first) is a guardrail, not a sandbox. In
+  production this step runs in an ephemeral, no-network container under a separate user
+  (gVisor/Firecracker), and the key comes from a secret store.
+- The deterministic URL shortener is an **open redirect by design** (any `http(s)` target),
+  has **no authentication**, rate limiting only when a requirement asks for it, and uses
+  **predictable sequential codes**; these are stated in its trade-offs and risks.
 
 ---
 
@@ -658,14 +690,24 @@ Not enforced in this prototype (documented, would be required for production):
 - The generated service favours the standard library and clarity over framework features.
 
 **Limitations:**
-- Code/test/doc generation is **model-authored and sandbox-validated**: the LLM writes the
-  project from the requirement and it is accepted only if it compiles and its tests pass;
-  a rejected bundle gets one repair pass with the sandbox output, and only then is a
-  verified template used. The default/offline (no-key) path always uses the verified
-  template.
+- Code and test generation is **model-authored and sandbox-validated**: the LLM writes the
+  project from the requirement and it is accepted only if it passes the static scan,
+  compiles and its own tests pass; a rejected bundle gets one repair pass with the sandbox
+  output, and only then is a verified template used. The default/offline (no-key) path
+  always uses the verified template.
+- On the live path the **API contract and README are synthesized from the model's design**
+  by the Repair agent when the model's bundle omits them (the codegen prompt caps the bundle
+  at 8 files so it fits one response). The contract lists only endpoints found in the code;
+  the validator checks that it exists, not that it conforms.
+- **Design decisions are not verified individually.** A model's design can describe more
+  than its slice implements (an async queue, a required header, role checks); the coverage
+  table verifies endpoints, and the tests verify behaviour the model chose to test. Each
+  live summary says so. A Critic agent is the next step.
+- The model's own tests are the behavioural evidence; they cover main paths, not edge cases
+  (e.g. the recorded shortener accepts a TTL but its cache path does not re-check expiry).
 - Human checkpoints are **console-based** in this prototype (no web UI).
-- The brownfield repo scan is a summarizing heuristic (candidate touch points), not a full
-  static-analysis/impact engine.
+- The brownfield repo scan ranks files by term overlap with the requirement — a heuristic
+  for candidate touch points, not a static-analysis/impact engine.
 
 ---
 
@@ -689,7 +731,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Observability (tokens / cost / latency) | `llm/client.py::MetricsCollector`, `result.json` metrics |
 | Mandatory URL-shortener use case | `knowledge/url_shortener.py` (generated & tested); `demo/` + `Dockerfile` |
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
-| Evidence of the model-driven path | `examples/llm-run*/result.json` — three domains (tokens, latency, cost, retries, per-stage fallbacks); the Go run records the codegen repair pass |
+| Evidence of the model-driven path | `examples/llm-run*/result.json` — three domains (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
 | Evaluation (quality / adherence / tool correctness / efficiency) | `scripts/evaluate.py` (CI step), `tests/test_tools.py` |
@@ -744,4 +786,4 @@ The agent system is the application; a pipeline is how it would be run and opera
 ---
 
 **License:** MIT. This prototype is intended as production-*shaped* reference work: modular,
-typed, tested, documented, and defensible end to end.
+typed, tested and documented, with its gaps written down.

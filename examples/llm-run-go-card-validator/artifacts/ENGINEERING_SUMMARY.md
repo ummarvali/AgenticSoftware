@@ -5,56 +5,51 @@
 **Validation:** 5/5 checks passed
 
 ## Implementation Plan
-- Level 0: design_arch (design)
-- Level 1: design_api (design, reused), design_data_model (design, reused), code_scaffold (code)
-- Level 2: design_rules (design, reused), code_config (code, reused), code_models (code, reused)
-- Level 3: design_rule_engine (design, reused), code_business_rules (code, reused), code_format_rules (code, reused), code_risk_rules (code, reused)
-- Level 4: code_rule_engine (code, reused), tests_unit_business_rules (tests), tests_unit_format_rules (tests, reused), tests_unit_risk_rules (tests, reused)
-- Level 5: code_api_handlers (code, reused), tests_unit_rule_engine (tests, reused), docs_architecture (docs)
-- Level 6: code_server (code, reused), docs_api_spec (docs, reused)
-- Level 7: code_logging_observability (code, reused), docs_readme (docs, reused)
-- Level 8: tests_api_integration (tests, reused), validate_static_analysis (validate)
-- Level 9: tests_load_performance (tests, reused), validate_security_review (validate, reused)
-- Level 10: validate_test_suite (validate, reused)
-- Level 11: summary_final (summary)
+- Level 0: design_architecture (design)
+- Level 1: design_api_contract (design, reused), design_rule_engine (design, reused), scaffold_project (code)
+- Level 2: impl_config (code, reused), impl_models (code, reused)
+- Level 3: impl_card_format_validator (code, reused), impl_cvv_validator (code, reused), impl_expiration_validator (code, reused), impl_fraud_validator (code, reused), impl_limit_validator (code, reused)
+- Level 4: impl_decision_engine (code, reused), unit_tests_validators (tests)
+- Level 5: impl_api_layer (code, reused), unit_tests_decision_engine (tests, reused), write_readme (docs)
+- Level 6: impl_logging_errors (code, reused), write_api_docs (docs, reused)
+- Level 7: integration_tests_api (tests, reused)
+- Level 8: validate_tests_lint (validate)
+- Level 9: validate_manual_smoke (validate, reused)
+- Level 10: final_summary (summary)
 
 ## Rationale (key decisions & agent decision log)
-- Production target architecture is a Go microservice exposing REST/JSON over TLS; this decision is recorded but the first runnable slice is implemented in Python using only the standard library (http.server for routing, sqlite3 for local persistence) to validate the contract and rule logic
-- Service behaves statelessly with respect to transaction content: no raw PAN, CVV, or full transaction payload is persisted; only a SHA-256 hashed card token, masked PAN (first6+last4), and aggregate amounts are stored locally to support idempotency and velocity limits
-- Idempotency is implemented via a required Idempotency-Key header; the first validation result for a key is cached in SQLite with a TTL and replayed verbatim on retry, guaranteeing idempotent responses
-- Card network is detected from PAN prefix/length (Visa, MasterCard, Amex, Discover) and used to select CVV length rule (4 digits for Amex, 3 otherwise) and PAN length range
-- Business rule limits (min/max single-transaction amount, daily/monthly per-card totals) are loaded from environment variables at startup and applied via the Velocity Ledger; blacklist is a static local table checked by hashed card token
-- All inbound fields are strictly type/length/charset validated before any processing step to guard against injection and malformed input; validation failures return structured 'rejected' results rather than throwing raw errors
-- All logging uses structured JSON to stdout and redacts PAN/CVV, emitting only masked PAN and hashed token plus outcome/reasons, to respect PCI-aware handling of tokenized/test data
-- Response classification: 'rejected' for hard format/limit failures, 'flagged' for business-rule concerns (e.g., blacklist hit, limit near threshold) requiring downstream review, 'approved' otherwise
-- Persistence default: sqlite (NFRs imply durability/scale -> recommend the SQLite backend as default).
-- Architect: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default
-- Architect: reuse - architecture already committed; 'design_api' is covered by it
-- Architect: reuse - architecture already committed; 'design_data_model' is covered by it
+- Target production architecture is a Go microservice (per requirement); the first runnable slice is implemented in Python 3 standard library only (http.server for HTTP, sqlite3 for optional durable state, threading for TTL eviction and rate limiting) to validate the design before porting to Go/net-http or a Go web framework
+- REST/JSON synchronous API as agreed; single POST /v1/validate endpoint is the primary integration surface, mirroring the eventual Go handler signature
+- Card PAN and CVV are never written to logs or persisted; only bin, last4, network, and a salted SHA-256 card_token are stored/logged, satisfying the PCI-DSS-aware requirement in-process
+- Rules (limits, allowed networks, blacklist thresholds, velocity window) live in an external JSON file loaded at startup and reloadable via POST /v1/rules/reload, satisfying 'no redeploy for rule changes' without needing an external rules engine service
+- Velocity and idempotency state are held in-memory (Python dicts protected by a lock) for the prototype since the service is single-process; card_token is the key for both blacklist and velocity checks
+- Blacklist and audit log optionally persist to a local SQLite file so restarts do not lose blacklist entries; this is the only durable store in the prototype, matching 'in-memory or lightweight persistent store' assumption
+- Idempotency is implemented by caching the ValidationResult keyed on Idempotency-Key (or transaction_id if header absent) for a bounded TTL, returning the cached decision on repeat submission instead of re-running rules
+- Validation engine runs rules in a fixed deterministic order (format -> expiry -> CVV -> limits -> fraud/velocity) and short-circuits only on malformed/unsanitizable input, otherwise accumulates all applicable reason codes for a single response
+- Rate limiting is implemented as an in-memory per-IP token bucket inside the request handler, acceptable for the single-process prototype and directly portable to a Go middleware
+- Metrics are hand-rolled counters/histograms serialized in Prometheus text format from stdlib code, avoiding any third-party dependency while remaining Prometheus-compatible
+- Persistence default: memory (no durability signal -> in-memory default is sufficient for the prototype).
+- Architect: design(in-memory) - no durability signal -> in-memory default is sufficient for the prototype
+- Architect: reuse - architecture already committed; 'design_api_contract' is covered by it
 - CodeGenerator: generate - no code yet → generate from the design
-- Architect: reuse - architecture already committed; 'design_rules' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_config' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_models' is covered by it
 - Architect: reuse - architecture already committed; 'design_rule_engine' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_business_rules' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_risk_rules' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_format_rules' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_rule_engine' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_config' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_models' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_card_format_validator' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_cvv_validator' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_fraud_validator' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_limit_validator' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_expiration_validator' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_decision_engine' is covered by it
 - TestGenerator: generate-tests - generate unit + integration tests for the code
-- TestGenerator: reuse - test suite already generated; 'tests_unit_format_rules' is covered by it
-- TestGenerator: reuse - test suite already generated; 'tests_unit_risk_rules' is covered by it
-- CodeGenerator: reuse - code already generated from the current design; 'code_api_handlers' is covered by it
-- TestGenerator: reuse - test suite already generated; 'tests_unit_rule_engine' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_api_layer' is covered by it
+- TestGenerator: reuse - test suite already generated; 'unit_tests_decision_engine' is covered by it
 - DocGenerator: generate-docs - generate README and architecture docs
-- CodeGenerator: reuse - code already generated from the current design; 'code_server' is covered by it
+- CodeGenerator: reuse - code already generated from the current design; 'impl_logging_errors' is covered by it
 - DocGenerator: defer - docs stage already ran and produced nothing; the Repair agent synthesizes docs from the design after validation
-- CodeGenerator: reuse - code already generated from the current design; 'code_logging_observability' is covered by it
-- DocGenerator: defer - docs stage already ran and produced nothing; the Repair agent synthesizes docs from the design after validation
-- TestGenerator: reuse - test suite already generated; 'tests_api_integration' is covered by it
+- TestGenerator: reuse - test suite already generated; 'integration_tests_api' is covered by it
 - Validator: validate - compile code, run tests, check contract & docs
-- TestGenerator: reuse - test suite already generated; 'tests_load_performance' is covered by it
-- Validator: reuse - artifact set unchanged since the last report; 'validate_security_review' needs no re-run
-- Validator: reuse - artifact set unchanged since the last report; 'validate_test_suite' needs no re-run
+- Validator: reuse - artifact set unchanged since the last report; 'validate_manual_smoke' needs no re-run
 - SummaryWriter: summarize - consolidate the run into the final summary
 - Repair: repair - auto-fixing: api contract present, documentation present
 - Validator: validate - compile code, run tests, check contract & docs
@@ -65,19 +60,23 @@
 
 | Method | Path | Summary | Status | In generated slice |
 | --- | --- | --- | --- | --- |
-| `POST` | `/v1/transactions/validate` | Validate a card transaction against format, field, and business rules; idempotent via Idempotency-Key header | 200 | yes |
-| `GET` | `/healthz` | Liveness probe indicating the process is running | 200 | yes |
-| `GET` | `/readyz` | Readiness probe verifying local SQLite store is accessible | 200 | yes |
+| `POST` | `/v1/validate` | Submit a card transaction for validation; returns decision and reason codes. Idempotent via Idempotency-Key header. | 200 | yes |
+| `POST` | `/v1/rules/reload` | Hot-reload validation rule configuration from disk without restarting the service | 200 | yes |
+| `GET` | `/v1/rules` | Return the currently active rule configuration (non-sensitive) for observability | 200 | yes |
+| `POST` | `/v1/blacklist` | Add a card token (or raw PAN, hashed server-side) to the blacklist store | 201 | yes |
+| `GET` | `/healthz` | Liveness probe: process is running | 200 | yes |
+| `GET` | `/readyz` | Readiness probe: rules config loaded and stores reachable | 200 | yes |
+| `GET` | `/metrics` | Prometheus-compatible text exposition of request counts, decision counts, latency histogram | 200 | yes |
 
 ## Generated Artifacts
 - cardvalidator/__init__.py
-- cardvalidator/config.py
-- cardvalidator/validation.py
-- cardvalidator/storage.py
+- cardvalidator/masking.py
 - cardvalidator/rules.py
-- cardvalidator/app.py
+- cardvalidator/store.py
+- cardvalidator/engine.py
+- cardvalidator/server.py
 - openapi.yaml
-- tests/test_validation.py
+- tests/test_engine.py
 - tests/test_api.py
 - README.md
 
@@ -88,58 +87,61 @@
 | Check | Result | Detail |
 | --- | --- | --- |
 | code compiles | PASS | all files compiled |
-| tests pass | PASS | Ran 20 tests in 0.270s — OK |
+| tests pass | PASS | Ran 15 tests in 0.521s — OK |
 | api contract present | PASS | openapi.yaml found |
 | documentation present | PASS | docs generated |
 | static safety scan | PASS | no findings |
 
 Approach:
-- Static: every generated .py file is compiled (py_compile).
-- Dynamic: the generated unit + integration suite is executed in a subprocess with a timeout and a credential-scrubbed environment.
-- Contract: an OpenAPI document must exist whenever the design exposes an API.
+- Static safety (first, before anything runs): an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle, import aliases resolved), imports outside the standard library, hard-coded secrets and modules that shadow the standard library; code with a high-severity finding is not executed.
+- Static: every generated .py file is compiled.
+- Dynamic: the generated unit + integration suite is executed in an isolated interpreter (python -I) in a subprocess, with a timeout and a credential-scrubbed environment.
+- Contract: an OpenAPI document must exist whenever the design exposes an API (existence is checked, not conformance).
 - Documentation: README/architecture docs must be present.
-- Static safety: an AST scan rejects dangerous calls (eval/exec/os.system/shell=True/pickle), imports outside the standard library, and hard-coded secrets.
 - Feedback loop: repairable findings are fixed by the Repair agent and re-validated (bounded); compile failures halt for human attention.
 - Human: a final acceptance gate reviews this report before the run is accepted.
 - Model output: LLM-authored code was accepted only after passing a sandbox compile+test gate (a rejected bundle gets one repair pass with the sandbox output); otherwise the verified template was used.
 
 ## Run Monitoring
 - provider: llm
-- tasks_completed: 30
+- tasks_completed: 24
 - retries: 0
 - repairs: 1
 - degradations: 0
-- parallel_levels: 9
-- reused_tasks: 22
+- parallel_levels: 6
+- reused_tasks: 16
 - human_gates_passed_before_summary: 2
-- llm_calls: 6
-- llm_tokens: 64430
-- llm_est_cost_usd: 0.1589
+- llm_calls: 4
+- llm_tokens: 42425
+- llm_est_cost_usd: 0.3846
 - llm_fallbacks: []
 
 ## Risks
-- Persistence is SQLite (single file, single node); a multi-node deployment needs an external database.
-- No authentication or rate limiting on write endpoints by default (abuse risk).
+- Persistence: an in-memory store (data lost on restart) or SQLite (single file, single node) where configured; a multi-node deployment needs an external database.
+- Rate limiting in the generated slice is in-process (resets on restart, not shared across instances); write endpoints are unauthenticated.
 - Generated tests cover core paths; add load/security tests before production.
 
 ## Trade-offs
-- Prototype uses a single SQLite file for idempotency cache and velocity ledger on one process; production (Go) would use a distributed cache (e.g., Redis) or shared datastore so multiple stateless instances share idempotency/velocity state consistently
-- Prototype runs single-threaded stdlib HTTP server without TLS termination built in; production terminates TLS at the service or via a sidecar/load balancer and runs multiple horizontally scaled Go instances behind it
-- Prototype computes velocity limits synchronously against local SQLite, risking race conditions under concurrent load from multiple processes; production would use atomic distributed counters or a transactional store to guarantee correctness at scale
-- Prototype logs to local stdout only; production integrates centralized structured logging, metrics (e.g., request latency/outcome counters), and distributed tracing across the payment processing pipeline
-- Prototype's blacklist and limit configuration are static tables/env vars loaded at boot; production would support dynamic configuration reload or a config service without restarting instances
+- Prototype uses Python's single-threaded-ish http.server (with ThreadingMixIn) for concurrency; production Go service would use goroutines/net-http or a framework (e.g. Gin/Fiber) for true concurrent low-latency handling at scale
+- Prototype keeps velocity counters and idempotency cache in-process memory, meaning state is lost on restart and not shared across instances; production would move this to a shared low-latency store (e.g. Redis) to support horizontal scaling and statelessness
+- Prototype optionally persists blacklist/audit data to a local SQLite file on the same host; production would use a managed database or durable log store accessible from multiple stateless replicas
+- Prototype's rate limiter is per-process and per-IP in memory; production would use a centralized or edge-level rate limiter (API gateway, Redis-backed) to be consistent across horizontally scaled instances
+- Prototype exposes /metrics via hand-written Prometheus text formatting; production would use the official Go Prometheus client library for richer metric types and lower overhead
+- Prototype achieves sub-100ms latency incidentally due to simple in-memory logic; production would add explicit load testing, connection pooling, and circuit breakers for guaranteed SLAs under concurrent load
+- Prototype has no built-in TLS termination (assumes infra handles it) and no mutual auth between services; production would add mTLS/service mesh policies for PCI-DSS network segmentation requirements
 
 ## Assumptions
-- What specific validation rules are required beyond basic format checks (e.g., fraud scoring, velocity checks, merchant category restrictions)? -> assumed: Implement basic format/field validation (Luhn check, expiry, CVV, amount, currency) plus simple configurable limit checks; no external fraud scoring integration
-- What API protocol/style is expected (REST, gRPC, message queue-based)? -> assumed: Expose a REST API using JSON over HTTP
-- Is persistent storage required for transaction history, or is this a stateless validation-only service? -> assumed: Service is stateless; validation results are returned synchronously and not persisted by this service
-- Are there specific card networks (Visa, MasterCard, Amex) with different validation rules that must be supported? -> assumed: Support major card networks (Visa, MasterCard, Amex, Discover) with standard format validation rules
-- What compliance standards (PCI-DSS, GDPR) must be strictly adhered to, and is this handling real card data or test/tokenized data? -> assumed: Assume service handles tokenized or test data and follows general secure coding best practices, not full PCI-DSS certification scope
-- Should the service integrate with external systems (issuer banks, fraud detection APIs) or operate purely on self-contained rules? -> assumed: Operate as a self-contained rules-based validator with no external system integrations initially
+- What specific validation rules are required beyond basic format checks — is fraud detection, velocity checking, or blacklist checking in scope? -> assumed: Implement basic format/rule validation (Luhn, expiry, CVV, amount limits) plus simple blacklist/velocity checks using in-memory or lightweight persistent store
+- What is the expected API protocol and integration pattern (synchronous REST/gRPC call, async message queue consumer, or both)? -> assumed: Expose a synchronous REST API using JSON over HTTP, built with a standard Go web framework
+- Does this service need to persist transaction/validation history, and if so, what database should be used? -> assumed: Use an in-memory store for short-term velocity/rate checks and log validation results to stdout/structured logs; no long-term persistence layer included by default
+- Are there specific card networks (Visa, Mastercard, Amex, etc.) or regional rules that must be supported? -> assumed: Support major networks (Visa, Mastercard, Amex, Discover) using standard BIN range and length rules
+- Is this service expected to integrate with external systems like card issuers, payment gateways, or third-party fraud services? -> assumed: No external integrations; service performs self-contained validation only, with hooks/interfaces designed for future integration
+- What compliance/security requirements apply (PCI-DSS, data residency, encryption at rest/in transit)? -> assumed: Follow PCI-DSS-aware best practices: never log full card numbers/CVV, mask sensitive data in logs, assume TLS termination handled at infrastructure level
 
 ## Limitations
 - Reasoning and code authoring were model-driven; no stage needed the deterministic fallback.
+- The design decisions under Rationale describe the model's target design. What is verified for the generated slice is: the endpoints marked 'yes' in the coverage table exist in the code, the code compiles, passes the static scan, and passes the model's own tests. Individual decisions (e.g. an async queue, a required header) are not checked against the code; a critic agent that does so is the next step. The API contract and README are synthesized from the design by the Repair agent when the model's bundle does not include them.
 - Generated service targets clarity and the standard library over framework features (e.g. no async, no ORM).
 - Human checkpoints are console-based in this prototype.
-- The validation sandbox is a subprocess with a timeout and scrubbed environment, not a network-isolated container.
+- The validation sandbox is an isolated-mode subprocess with a timeout and a scrubbed environment, not a network-isolated container or separate OS user.
 - The requirement names a non-Python target; the design records that target, but the validated prototype slice is Python (standard library) because that is what the compile+test gate can execute. Other languages need a runner + prompt (`CodeRunner`, `prompts/codegen.md`).

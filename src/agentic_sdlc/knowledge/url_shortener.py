@@ -408,16 +408,21 @@ _REASON = {
     302: "Found",
     400: "Bad Request",
     404: "Not Found",
+    429: "Too Many Requests",
     500: "Internal Server Error",
 }
 
 
 class WSGIApp:
-    """Minimal router mapping HTTP requests onto the service."""
+    """Minimal router mapping HTTP requests onto the service.
 
-    def __init__(self, service: ShortenerService | None = None) -> None:
+    ``limiter`` is optional: any object with ``allow(key) -> bool`` guards link
+    creation per client address (HTTP 429 when it says no)."""
+
+    def __init__(self, service: ShortenerService | None = None, limiter=None) -> None:
         self.service = service or ShortenerService()
         self.analytics = AnalyticsService(self.service.store)
+        self.limiter = limiter
 
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
@@ -426,6 +431,8 @@ class WSGIApp:
             if path == "/healthz":
                 return self._json(start_response, 200, {"status": "ok"})
             if path == "/api/shorten" and method == "POST":
+                if self.limiter and not self.limiter.allow(environ.get("REMOTE_ADDR", "?")):
+                    return self._json(start_response, 429, {"error": "rate limit exceeded"})
                 return self._shorten(environ, start_response)
             if path.startswith("/api/stats/") and method == "GET":
                 return self._stats(start_response, path[len("/api/stats/") :])
@@ -498,29 +505,124 @@ class WSGIApp:
 app = WSGIApp()
 '''
 
-_SERVER = '''"""Run the URL shortener on the standard-library WSGI server."""
+_SERVER = '''"""Run the URL shortener on the standard-library WSGI server.
+
+Configuration comes from the environment (see ``config.py``) so the same entrypoint
+works on a laptop and in a container: ``SHORTENER_STORE=sqlite`` with
+``SHORTENER_DB_PATH`` selects the durable backend; the default is in-memory.
+"""
 
 from __future__ import annotations
 
-import os
 from wsgiref.simple_server import make_server
 
+from . import config
 from .api import WSGIApp
+from .service import ShortenerService
+from .store import InMemoryStore, SqliteStore
+#LIMITER_IMPORT
+
+
+def build_app() -> WSGIApp:
+    store = SqliteStore(config.DB_PATH) if config.STORE_BACKEND == "sqlite" else InMemoryStore()
+    service = ShortenerService(store=store, base_url=config.BASE_URL)
+    return WSGIApp(service=service#LIMITER_ARG)
 
 
 def main(host: str | None = None, port: int | None = None) -> None:
-    # Bind address/port come from the environment so the same entrypoint works on a
-    # laptop (127.0.0.1) and inside a container (0.0.0.0) without a code change.
-    host = host or os.environ.get("SHORTENER_HOST", "127.0.0.1")
-    port = port or int(os.environ.get("SHORTENER_PORT", "8000"))
-    app = WSGIApp()
-    with make_server(host, port, app) as httpd:
-        print(f"URL shortener listening on http://{host}:{port}")
+    host = host or config.HOST
+    port = port or config.PORT
+    with make_server(host, port, build_app()) as httpd:
+        print(f"URL shortener listening on http://{host}:{port} (store={config.STORE_BACKEND})")
         httpd.serve_forever()
 
 
 if __name__ == "__main__":
     main()
+'''
+
+_RATELIMIT = '''"""Per-client token-bucket rate limiter for link creation.
+
+Each client key (the remote address) gets a bucket of ``burst`` tokens refilled at
+``per_minute / 60`` tokens per second. In-process and thread-safe: a multi-instance
+deployment would move the buckets to a shared store (e.g. Redis) or the API gateway.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+
+
+class TokenBucketLimiter:
+    def __init__(self, per_minute: int | None = None, burst: int | None = None, clock=time.monotonic) -> None:
+        self.per_minute = per_minute or int(os.environ.get("SHORTENER_RATE_LIMIT_PER_MINUTE", "60"))
+        self.burst = burst or self.per_minute
+        self._rate = self.per_minute / 60.0
+        self._clock = clock
+        self._buckets: dict[str, tuple[float, float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            tokens, last = self._buckets.get(key, (float(self.burst), now))
+            tokens = min(float(self.burst), tokens + (now - last) * self._rate)
+            if tokens < 1.0:
+                self._buckets[key] = (tokens, now)
+                return False
+            self._buckets[key] = (tokens - 1.0, now)
+            return True
+'''
+
+_TEST_RATELIMIT = '''"""Rate limiting: the bucket itself, and the API returning 429."""
+
+import io
+import json
+import unittest
+
+from url_shortener.api import WSGIApp
+from url_shortener.ratelimit import TokenBucketLimiter
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class TestTokenBucket(unittest.TestCase):
+    def test_burst_then_block_then_refill(self):
+        clock = FakeClock()
+        rl = TokenBucketLimiter(per_minute=60, burst=2, clock=clock)
+        self.assertTrue(rl.allow("a"))
+        self.assertTrue(rl.allow("a"))
+        self.assertFalse(rl.allow("a"))
+        self.assertTrue(rl.allow("b"))          # buckets are per client
+        clock.t += 1.0                          # 60/min refills one token per second
+        self.assertTrue(rl.allow("a"))
+
+
+class TestApiRateLimit(unittest.TestCase):
+    def _post(self, app):
+        body = json.dumps({"url": "https://example.com"}).encode()
+        env = {"REQUEST_METHOD": "POST", "PATH_INFO": "/api/shorten", "REMOTE_ADDR": "10.0.0.1",
+               "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body)}
+        status = {}
+        app(env, lambda s, h: status.setdefault("s", s))
+        return status["s"]
+
+    def test_shorten_returns_429_when_limited(self):
+        app = WSGIApp(limiter=TokenBucketLimiter(per_minute=60, burst=1, clock=FakeClock()))
+        self.assertTrue(self._post(app).startswith("201"))
+        self.assertTrue(self._post(app).startswith("429"))
+
+
+if __name__ == "__main__":
+    unittest.main()
 '''
 
 _CONFIG = '''"""Environment-driven configuration for the URL shortener."""
@@ -786,14 +888,19 @@ paths:
 
 _GEN_README = '''# URL Shortener Service
 
-A scalable, dependency-free URL shortener with a REST API, pluggable persistence,
-and click analytics. Generated by the Agentic SDLC system.
+A single-process, dependency-free URL shortener with a REST API, pluggable persistence
+(in-memory or SQLite) and click analytics — structured so each layer can scale out
+independently. Generated by the Agentic SDLC system.
 
 ## Run it
 
 ```bash
-python -m url_shortener.server        # serves on http://127.0.0.1:8000
+python -m url_shortener.server        # serves on http://127.0.0.1:8000 (in-memory store)
+SHORTENER_STORE=sqlite SHORTENER_DB_PATH=shortener.db python -m url_shortener.server   # durable
 ```
+
+Environment: `SHORTENER_HOST`, `SHORTENER_PORT`, `SHORTENER_BASE_URL`, `SHORTENER_STORE`
+(`memory` | `sqlite`), `SHORTENER_DB_PATH`.
 
 ## Try it
 
@@ -919,7 +1026,10 @@ class UrlShortenerPack(KnowledgePack):
                 ApiEndpoint("GET", "/healthz", "Liveness probe",
                             response="{status: ok}", status=200),
             ],
-            decisions=[
+            decisions=([
+                "Per-client token bucket on POST /api/shorten (HTTP 429 when exhausted), "
+                "wired in at the server so the API core stays policy-free.",
+            ] if self._wants_rate_limit(analysis) else []) + [
                 "Base62 encoding of an offset numeric id for short, dense, URL-safe codes.",
                 "Idempotent shorten: identical live URLs reuse their code.",
                 "Store as a Protocol so durability is a deployment choice, not a rewrite.",
@@ -931,21 +1041,43 @@ class UrlShortenerPack(KnowledgePack):
                 "guessability for a small collision-handling cost.",
                 "Synchronous click recording is simplest; high write volume would move "
                 "analytics to an async event pipeline.",
-            ],
+            ] + ([
+                "In-process rate-limit buckets are exact for one instance but not shared; "
+                "a fleet needs a shared counter store or gateway-level limiting.",
+            ] if self._wants_rate_limit(analysis) else []),
         )
 
+    @staticmethod
+    def _wants_rate_limit(analysis: AnalysisResult) -> bool:
+        text = " ".join([analysis.intent, analysis.normalized_problem,
+                         *analysis.functional_requirements]).lower()
+        return "rate limit" in text or "rate-limit" in text or "throttl" in text
+
     def code(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
-        return [
+        limited = self._wants_rate_limit(analysis)
+        server = (_SERVER.replace("#LIMITER_IMPORT", "from .ratelimit import TokenBucketLimiter")
+                         .replace("#LIMITER_ARG", ", limiter=TokenBucketLimiter()")
+                  if limited else
+                  _SERVER.replace("#LIMITER_IMPORT\n", "").replace("#LIMITER_ARG", ""))
+        contract = (_OPENAPI.replace(
+                        '        "400": { description: Invalid URL or alias }\n',
+                        '        "400": { description: Invalid URL or alias }\n'
+                        '        "429": { description: Rate limit exceeded for this client }\n', 1)
+                    if limited else _OPENAPI)
+        files = [
             Artifact("url_shortener/__init__.py", _INIT, "code"),
             Artifact("url_shortener/base62.py", _BASE62, "code"),
             Artifact("url_shortener/store.py", _STORE, "code"),
             Artifact("url_shortener/service.py", _SERVICE, "code"),
             Artifact("url_shortener/analytics.py", _ANALYTICS, "code"),
             Artifact("url_shortener/api.py", _API, "code"),
-            Artifact("url_shortener/server.py", _SERVER, "code"),
+            Artifact("url_shortener/server.py", server, "code"),
             Artifact("url_shortener/config.py", _CONFIG, "config"),
-            Artifact("openapi.yaml", _OPENAPI, "contract"),
+            Artifact("openapi.yaml", contract, "contract"),
         ]
+        if limited:
+            files.insert(6, Artifact("url_shortener/ratelimit.py", _RATELIMIT, "code"))
+        return files
 
     def tests(
         self,
@@ -953,11 +1085,14 @@ class UrlShortenerPack(KnowledgePack):
         architecture: Architecture,
         code: list[Artifact],
     ) -> list[Artifact]:
-        return [
+        files = [
             Artifact("tests/test_base62.py", _TEST_BASE62, "test"),
             Artifact("tests/test_service.py", _TEST_SERVICE, "test"),
             Artifact("tests/test_api.py", _TEST_API, "test"),
         ]
+        if self._wants_rate_limit(analysis):
+            files.append(Artifact("tests/test_ratelimit.py", _TEST_RATELIMIT, "test"))
+        return files
 
     def docs(self, analysis: AnalysisResult, architecture: Architecture) -> list[Artifact]:
         return [

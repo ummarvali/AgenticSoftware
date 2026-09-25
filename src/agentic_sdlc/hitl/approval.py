@@ -1,9 +1,10 @@
 """Human-in-the-loop approval gates — the "controlled" in controlled autonomy.
 
 Agents execute independently, but the pipeline pauses at defined checkpoints so a
-human can review, approve, edit, or reject before the run continues. The same gates
+human can review and approve or reject before the run continues. The same gates
 support a non-interactive ``auto`` mode (documented assumptions are applied) so the
-system is scriptable and testable while still being safe by default.
+system is scriptable and testable — but auto mode never *accepts* a run whose
+validation failed (see ``Orchestrator._accept``), and the interactive gate fails closed.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ class ConsoleApproval(ApprovalGate):
         try:
             answer = input("Approve and continue? [Y/n] ").strip().lower()
         except EOFError:
-            # No TTY (e.g. piped input): fail safe by approving with a note.
-            return Decision(True, "no TTY; defaulted to approve")
+            # No TTY / closed input: fail closed. Use auto mode for unattended runs.
+            return Decision(False, "no input available; rejected (fail closed)")
         if answer in ("", "y", "yes"):
             return Decision(True, "approved by human")
         return Decision(False, "rejected by human")

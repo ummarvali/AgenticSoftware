@@ -45,13 +45,17 @@ class SummaryAgent(Agent):
             tradeoffs=list(bb.architecture.tradeoffs) if bb.architecture else [],
             validation=bb.validation.summary if bb.validation else "not run",
             validation_approach=[
-                "Static: every generated .py file is compiled (py_compile).",
-                "Dynamic: the generated unit + integration suite is executed in a "
-                "subprocess with a timeout and a credential-scrubbed environment.",
-                "Contract: an OpenAPI document must exist whenever the design exposes an API.",
+                "Static safety (first, before anything runs): an AST scan rejects dangerous "
+                "calls (eval/exec/os.system/shell=True/pickle, import aliases resolved), "
+                "imports outside the standard library, hard-coded secrets and modules that "
+                "shadow the standard library; code with a high-severity finding is not executed.",
+                "Static: every generated .py file is compiled.",
+                "Dynamic: the generated unit + integration suite is executed in an isolated "
+                "interpreter (python -I) in a subprocess, with a timeout and a "
+                "credential-scrubbed environment.",
+                "Contract: an OpenAPI document must exist whenever the design exposes an API "
+                "(existence is checked, not conformance).",
                 "Documentation: README/architecture docs must be present.",
-                "Static safety: an AST scan rejects dangerous calls (eval/exec/os.system/"
-                "shell=True/pickle), imports outside the standard library, and hard-coded secrets.",
                 "Feedback loop: repairable findings are fixed by the Repair agent and "
                 "re-validated (bounded); compile failures halt for human attention.",
                 "Human: a final acceptance gate reviews this report before the run is accepted.",
@@ -141,8 +145,8 @@ class SummaryAgent(Agent):
             "Generated service targets clarity and the standard library over "
             "framework features (e.g. no async, no ORM).",
             "Human checkpoints are console-based in this prototype.",
-            "The validation sandbox is a subprocess with a timeout and scrubbed "
-            "environment, not a network-isolated container.",
+            "The validation sandbox is an isolated-mode subprocess with a timeout and a "
+            "scrubbed environment, not a network-isolated container or separate OS user.",
         ]
         if provider == "llm":
             fb = [c for c in (llm.calls if llm else []) if c.fallback]
@@ -150,7 +154,15 @@ class SummaryAgent(Agent):
                     + (f"{len(fb)} stage(s) fell back to the deterministic engine "
                        f"({', '.join(c.stage for c in fb)})." if fb
                        else "no stage needed the deterministic fallback."))
-            return [note] + common
+            fidelity = ("The design decisions under Rationale describe the model's target "
+                        "design. What is verified for the generated slice is: the endpoints "
+                        "marked 'yes' in the coverage table exist in the code, the code "
+                        "compiles, passes the static scan, and passes the model's own tests. "
+                        "Individual decisions (e.g. an async queue, a required header) are not "
+                        "checked against the code; a critic agent that does so is the next step. "
+                        "The API contract and README are synthesized from the design by the "
+                        "Repair agent when the model's bundle does not include them.")
+            return [note, fidelity] + common
         return ["Offline deterministic engine covers known domains richly and unknown "
                 "domains with a generic scaffold; it is not a general code synthesizer."] + common
 

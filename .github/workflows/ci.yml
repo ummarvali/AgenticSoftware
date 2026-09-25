@@ -32,7 +32,7 @@ jobs:
         working-directory: demo
         run: python -m unittest discover -s tests -v
 
-      - name: End-to-end — mandatory use case must validate 4/4
+      - name: End-to-end — mandatory use case must validate 5/5
         env:
           PYTHONPATH: src
         run: python -m agentic_sdlc --quiet --file examples/greenfield.txt
@@ -71,3 +71,12 @@ jobs:
           curl -fs -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8000/$code" | grep -q 302
           curl -fs "http://127.0.0.1:8000/api/stats/$code" | grep -q '"clicks": 1'
           docker stop us
+      - name: Smoke test the durable (SQLite) backend
+        run: |
+          docker run -d --rm -p 8001:8000 --name us-sqlite \
+            -e SHORTENER_STORE=sqlite -e SHORTENER_DB_PATH=/data/shortener.db url-shortener:ci
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8001/healthz && break; sleep 0.5; done
+          curl -fs -X POST http://127.0.0.1:8001/api/shorten -H 'Content-Type: application/json' \
+               -d '{"url":"https://example.com/durable"}' | grep -q '"code"'
+          docker exec us-sqlite python -c "import sqlite3; n=sqlite3.connect('/data/shortener.db').execute('select count(*) from links').fetchone()[0]; assert n == 1, n"
+          docker stop us-sqlite

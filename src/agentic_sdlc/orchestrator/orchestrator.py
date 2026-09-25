@@ -30,7 +30,7 @@ from agentic_sdlc.agents import (
     RequirementAnalystAgent,
     TaskDecomposerAgent,
 )
-from agentic_sdlc.hitl import ApprovalGate, AutoApprove, ConsoleApproval
+from agentic_sdlc.hitl import ApprovalGate, AutoApprove, ConsoleApproval, Decision
 from agentic_sdlc.llm import get_provider
 from agentic_sdlc.llm.base import ReasoningProvider
 from agentic_sdlc.models import Requirement, RunResult, Task, TaskGraph
@@ -227,7 +227,13 @@ class Orchestrator:
                + ", ".join(c.name for c in report.checks if not c.passed)
                if report and not report.passed else "All checks passed.")
         )
-        decision = self.gate.review("Final acceptance", summary)
+        if isinstance(self.gate, AutoApprove) and report and not report.passed:
+            # Autonomy may proceed on documented assumptions, but it never signs off on
+            # failing work: that decision is reserved for a human.
+            decision = Decision(False, "not accepted — validation failed; non-interactive "
+                                       "mode never accepts a failing report (human review required)")
+        else:
+            decision = self.gate.review("Final acceptance", summary)
         bb.log("gate", f"acceptance: {decision.note}", approved=decision.approved)
         self._say(f"[gate 3/3] final acceptance: {decision.note}")
         if not decision.approved:

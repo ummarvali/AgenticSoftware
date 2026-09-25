@@ -2,65 +2,116 @@ openapi: 3.0.3
 info:
   title: Generated API
   version: 1.0.0
-  description: Endpoints implemented by the generated prototype slice.
+  description: "Synthesized by the Repair agent from the API design; lists only endpoints the generated slice serves."
 paths:
-  /v1/warehouses:
+  # design-level endpoint(s) not in this slice: GET /openapi.json
+  "/items":
     post:
-      summary: Create a warehouse
+      summary: "Register a new inventory item"
       responses:
-        "201": { description: OK }
-  /v1/warehouses:
+        "201":
+          description: "{id, sku, name, metadata, created_at}"
     get:
-      summary: List warehouses
+      summary: "List items with pagination/filtering by sku/name"
       responses:
-        "200": { description: OK }
-  /v1/products:
+        "200":
+          description: "{items:[...], page, page_size, total}"
+  "/items/{item_id}":
+    parameters:
+      - name: "item_id"
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: "Get item details"
+      responses:
+        "200":
+          description: "{id, sku, name, metadata, created_at}"
+  "/warehouses":
     post:
-      summary: Create a product/SKU
+      summary: "Register a new warehouse"
       responses:
-        "201": { description: OK }
-  /v1/products:
+        "201":
+          description: "{id, code, name, location}"
     get:
-      summary: List products
+      summary: "List all warehouses with inventory summary (total qty, distinct items, low-stock count)"
       responses:
-        "200": { description: OK }
-  /v1/stock:
+        "200":
+          description: "{warehouses:[{id, code, name, total_quantity, item_count, low_stock_count}], page, page_size, total}"
+  "/stock/add":
     post:
-      summary: Add new stock (initial quantity) for a product/SKU at a warehouse
+      summary: "Add stock quantity for item in a warehouse (creates stock row if absent)"
       responses:
-        "201": { description: OK }
-  /v1/stock/adjustments:
+        "200":
+          description: "{item_id, warehouse_id, quantity, updated_at}"
+  "/stock/adjust":
     post:
-      summary: Adjust stock (increment/decrement/set) with reason; idempotent via Idempotency-Key header
+      summary: "Adjust stock (positive or negative delta) with audit trail and idempotency"
       responses:
-        "200": { description: OK }
-  /v1/stock/{warehouse_id}/{product_id}:
+        "200":
+          description: "{item_id, warehouse_id, quantity, delta_applied, adjustment_id, alert_triggered}"
+  "/stock/{item_id}/{warehouse_id}":
+    parameters:
+      - name: "item_id"
+        in: path
+        required: true
+        schema: { type: string }
+      - name: "warehouse_id"
+        in: path
+        required: true
+        schema: { type: string }
     get:
-      summary: Get current stock level for a product at a specific warehouse
+      summary: "Query current stock level for an item in a specific warehouse"
       responses:
-        "200": { description: OK }
-  /v1/products/{product_id}/stock:
+        "200":
+          description: "{item_id, warehouse_id, quantity, low_stock_threshold, updated_at}"
+  "/stock/{item_id}":
+    parameters:
+      - name: "item_id"
+        in: path
+        required: true
+        schema: { type: string }
     get:
-      summary: Get stock levels for a product across all warehouses
+      summary: "Query aggregated stock levels across all warehouses for an item"
       responses:
-        "200": { description: OK }
-  /v1/warehouses/{warehouse_id}/stock:
+        "200":
+          description: "{item_id, total_quantity, by_warehouse:[{warehouse_id, quantity}]}"
+  "/stock":
     get:
-      summary: List all products and their stock levels within a warehouse
+      summary: "List stock records with pagination and filtering by item_id/warehouse_id/low_stock_only"
       responses:
-        "200": { description: OK }
-  /v1/thresholds/{warehouse_id}/{product_id}:
+        "200":
+          description: "{records:[...], page, page_size, total}"
+  "/stock/{item_id}/{warehouse_id}/threshold":
+    parameters:
+      - name: "item_id"
+        in: path
+        required: true
+        schema: { type: string }
+      - name: "warehouse_id"
+        in: path
+        required: true
+        schema: { type: string }
     put:
-      summary: Set or update low-stock threshold for a product-warehouse pair
+      summary: "Configure low-stock threshold for an item/warehouse pair"
       responses:
-        "200": { description: OK }
-  /v1/alerts:
+        "200":
+          description: "{item_id, warehouse_id, low_stock_threshold}"
+  "/alerts/low-stock":
     get:
-      summary: List currently active low-stock alerts
+      summary: "List current low-stock conditions (stock below threshold) across items/warehouses"
       responses:
-        "200": { description: OK }
-  /v1/audit:
+        "200":
+          description: "{alerts:[{item_id, warehouse_id, quantity, threshold}], page, page_size, total}"
+  "/alerts":
     get:
-      summary: Query stock adjustment audit log, filterable by warehouse/product/date range
+      summary: "List historical triggered alerts with pagination/filtering by status/date"
       responses:
-        "200": { description: OK }
+        "200":
+          description: "{alerts:[...], page, page_size, total}"
+  "/audit/adjustments":
+    get:
+      summary: "Query audit history of stock adjustments with pagination/filtering"
+      responses:
+        "200":
+          description: "{records:[{id, item_id, warehouse_id, delta, reason, actor, resulting_quantity, created_at}], page, page_size, total}"

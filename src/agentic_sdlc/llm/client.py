@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Protocol
 
@@ -33,8 +32,10 @@ class LLMClient(Protocol):
                  timeout: float = 30.0, max_tokens: int = 4096) -> LLMResponse: ...
 
 
-# Approximate USD price per 1M tokens (input, output). Only used for a cost estimate;
-# unknown models fall back to a conservative default.
+# Approximate USD list price per 1M tokens (input, output), matched by longest model-id
+# prefix. Only used for the cost estimate and the spend circuit breaker. Unknown models
+# are priced at a Sonnet-class rate ($3/$15), which over- rather than under-estimates
+# for most models.
 _PRICES: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
@@ -46,8 +47,12 @@ _PRICES: dict[str, tuple[float, float]] = {
     "claude-3-7-sonnet": (3.00, 15.00),
     "claude-sonnet-4": (3.00, 15.00),
     "claude-opus-4": (15.00, 75.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-opus-4-5": (5.00, 25.00),
+    "claude-sonnet-5": (2.00, 10.00),
 }
-_DEFAULT_PRICE = (1.00, 3.00)
+_DEFAULT_PRICE = (3.00, 15.00)
 
 
 def _temperature(default: float | None) -> float | None:
@@ -84,25 +89,50 @@ def _call_with_ceiling(fn, kwargs: dict):
             raise
 
 
+_REJECTION_WORDS = ("unsupported", "not supported", "does not support", "unexpected keyword")
+
+
 def _call(fn, kwargs: dict, *, optional: tuple[str, ...] = ("temperature",)):
-    """Invoke an SDK method, dropping optional sampling parameters the installed SDK or
-    the selected model rejects, instead of failing the whole stage over a knob."""
+    """Invoke an SDK method, adapting to parameters the installed SDK or the selected
+    model rejects instead of failing the whole stage over a knob:
+
+    * an optional sampling parameter (``temperature``) rejected by the SDK (TypeError)
+      or by the API (HTTP 400 "unsupported ...") is dropped;
+    * models that require ``max_completion_tokens`` instead of ``max_tokens`` (OpenAI
+      reasoning models) get the parameter renamed."""
 
     try:
         return fn(**kwargs)
-    except TypeError as exc:
-        for name in optional:
-            if name in kwargs and name in str(exc):
-                kwargs = {k: v for k, v in kwargs.items() if k != name}
-                return _call(fn, kwargs, optional=tuple(o for o in optional if o != name))
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is a parameter rejection
+        msg = str(exc)
+        if "max_completion_tokens" in msg and "max_tokens" in kwargs:
+            renamed = {k: v for k, v in kwargs.items() if k != "max_tokens"}
+            renamed["max_completion_tokens"] = kwargs["max_tokens"]
+            return _call(fn, renamed, optional=optional)
+        rejected = isinstance(exc, TypeError) or any(w in msg.lower() for w in _REJECTION_WORDS)
+        if rejected:
+            for name in optional:
+                if name in kwargs and name in msg:
+                    kwargs = {k: v for k, v in kwargs.items() if k != name}
+                    return _call(fn, kwargs, optional=tuple(o for o in optional if o != name))
         raise
 
 
 def _price_for(model: str) -> tuple[float, float]:
-    for prefix, price in _PRICES.items():
-        if model.startswith(prefix):
-            return price
-    return _DEFAULT_PRICE
+    """Longest matching prefix wins (``gpt-4o-mini`` must not be priced as ``gpt-4o``)."""
+
+    matches = [p for p in _PRICES if model.startswith(p)]
+    return _PRICES[max(matches, key=len)] if matches else _DEFAULT_PRICE
+
+
+class TruncatedOutput(RuntimeError):
+    """The model hit the output ceiling. Carries the usage so the spend is counted, and
+    is not retried at the same ceiling (it would truncate again)."""
+
+    def __init__(self, message: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        super().__init__(message)
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
 
 
 @dataclass
@@ -114,6 +144,7 @@ class CallRecord:
     latency_s: float
     fallback: bool = False
     error: str = ""
+    event: bool = False   # a pipeline event (sandbox rejection, fallback), not an API request
 
 
 @dataclass
@@ -139,6 +170,16 @@ class MetricsCollector:
         return sum(1 for c in self.calls if c.fallback)
 
     @property
+    def api_calls(self) -> int:
+        return sum(1 for c in self.calls if not c.event)
+
+    @property
+    def retries(self) -> int:
+        """Failed attempts that were retried or repaired (API errors, bad JSON, sandbox
+        rejections) — excludes the terminal fallback records."""
+        return sum(1 for c in self.calls if c.error and not c.fallback)
+
+    @property
     def est_cost_usd(self) -> float:
         total = 0.0
         for c in self.calls:
@@ -148,13 +189,15 @@ class MetricsCollector:
         return round(total, 6)
 
     def summary(self) -> str:
-        return (f"{len(self.calls)} LLM calls, {self.total_tokens} tokens, "
-                f"~${self.est_cost_usd:.4f}, {self.fallbacks} fallbacks")
+        return (f"{self.api_calls} LLM calls, {self.total_tokens} tokens, "
+                f"~${self.est_cost_usd:.4f}, {self.retries} retries, {self.fallbacks} fallbacks")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "calls": [asdict(c) for c in self.calls],
+            "api_calls": self.api_calls,
             "total_tokens": self.total_tokens,
+            "retries": self.retries,
             "fallbacks": self.fallbacks,
             "est_cost_usd": self.est_cost_usd,
         }
@@ -213,7 +256,9 @@ class OpenAIClient:
         resp = _call_with_ceiling(self._client.chat.completions.create, kwargs)
         usage = getattr(resp, "usage", None)
         if getattr(resp.choices[0], "finish_reason", "") == "length":
-            raise RuntimeError(f"model output truncated at max_tokens={max_tokens}")
+            raise TruncatedOutput(f"model output truncated at max_tokens={max_tokens}",
+                                  getattr(usage, "prompt_tokens", 0) or 0,
+                                  getattr(usage, "completion_tokens", 0) or 0)
         return LLMResponse(
             text=resp.choices[0].message.content or "",
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
@@ -226,9 +271,10 @@ class AnthropicClient:
     """Native Claude (Anthropic) chat client (lazy-imported).
 
     Requires an API key from console.anthropic.com in ``ANTHROPIC_API_KEY`` (a
-    claude.ai subscription is a separate product and cannot be used here). JSON is
-    coerced by prefilling the assistant turn with ``{`` — the standard Anthropic
-    technique for reliable structured output.
+    claude.ai subscription is a separate product and cannot be used here). JSON output
+    is requested in the system prompt and parsed leniently by the provider; the model is
+    ``ANTHROPIC_MODEL`` if set, otherwise the first Sonnet model the account can list.
+    Outputs above 8192 tokens are streamed.
     """
 
     def __init__(self, model: str | None = None) -> None:
@@ -274,12 +320,14 @@ class AnthropicClient:
             resp = _call_with_ceiling(self._client.messages.create, kwargs)
         # Concatenate every text block (thinking blocks have no .text and are skipped).
         text = "".join(getattr(b, "text", "") or "" for b in (resp.content or []))
+        usage = getattr(resp, "usage", None)
         if getattr(resp, "stop_reason", "") == "max_tokens":
-            raise RuntimeError(f"model output truncated at max_tokens={max_tokens} "
-                               f"(got {len(text)} chars)")
+            raise TruncatedOutput(f"model output truncated at max_tokens={max_tokens} "
+                                  f"(got {len(text)} chars)",
+                                  getattr(usage, "input_tokens", 0) or 0,
+                                  getattr(usage, "output_tokens", 0) or 0)
         if not text.strip():
             raise RuntimeError(f"model returned no text (stop_reason={getattr(resp, 'stop_reason', '?')})")
-        usage = getattr(resp, "usage", None)
         return LLMResponse(
             text=text,
             prompt_tokens=getattr(usage, "input_tokens", 0) or 0,

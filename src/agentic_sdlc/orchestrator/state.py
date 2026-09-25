@@ -8,6 +8,7 @@ what turns "a bunch of steps" into auditable, coordinated orchestration.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from dataclasses import dataclass, field
@@ -87,9 +88,12 @@ class Blackboard:
         return implemented, design_only
 
     def fingerprint(self) -> str:
-        """Cheap identity of the current artifact set (paths + sizes), for idempotence."""
+        """Content hash of the current artifact set, for idempotence."""
 
-        return "|".join(f"{a.path}:{len(a.content)}" for a in sorted(self.all_artifacts(), key=lambda a: a.path))
+        h = hashlib.sha256()
+        for a in sorted(self.all_artifacts(), key=lambda a: a.path):
+            h.update(a.path.encode("utf-8") + b"\0" + a.content.encode("utf-8") + b"\0")
+        return h.hexdigest()
 
     def log(self, kind: str, message: str, **data: Any) -> dict[str, Any]:
         event = {"ts": round(time.time(), 3), "kind": kind, "message": message, **data}

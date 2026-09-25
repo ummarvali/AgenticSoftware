@@ -249,5 +249,33 @@ class DesignImplementationCoherenceTests(unittest.TestCase):
             self.assertTrue(r.validation.passed)   # Repair synthesizes README; contract from implemented endpoints
 
 
+class ValidationSafetyTests(unittest.TestCase):
+    def _run_with_code(self, tmp, files):
+        from agentic_sdlc.llm.deterministic import DeterministicProvider
+        from agentic_sdlc.models import Artifact
+        class Custom(DeterministicProvider):
+            def generate_code(self, analysis, architecture):
+                return super().generate_code(analysis, architecture) + [
+                    Artifact(p, c, "code") for p, c in files]
+        return Orchestrator(_config(tmp), provider=Custom()).run(
+            "Build a scalable URL shortener service with APIs, persistence, and analytics.")
+
+    def test_uncompilable_code_halts_even_after_retry(self):
+        # A retry must re-validate (and fail again), never reuse the failed report.
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_with_code(tmp, [("url_shortener/broken.py", "def f(:\n    pass\n")])
+            self.assertTrue(any(e["kind"] == "halted" for e in r.events))
+            self.assertIsNone(r.summary)
+
+    def test_high_severity_code_is_never_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_with_code(tmp, [("url_shortener/evil.py",
+                                           "import os\n\ndef go():\n    os.system('echo hi')\n")])
+            checks = {c.name: c for c in r.validation.checks}
+            self.assertFalse(checks["static safety scan"].passed)
+            self.assertFalse(checks["tests pass"].passed)
+            self.assertIn("not executed", checks["tests pass"].detail)
+
+
 if __name__ == "__main__":
     unittest.main()
