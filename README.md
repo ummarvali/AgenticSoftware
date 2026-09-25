@@ -88,6 +88,7 @@ A pipeline run on GitHub, plus four live runs produced by the final code and che
 | What you want to see | Where |
 | --- | --- |
 | **The pipeline, end to end on GitHub**: the mandatory requirement run in Actions — spend approved, live console, 5/5 checks with 28 model-written tests, 88.5k tokens (~$0.67), accepted, pull request opened | [Actions run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (code under `generated/20260925-115009-176/`) |
+| **A brownfield change requested through the issue form** — "add rate limiting" to `demo/`: 6/6 checks, the change validated with `demo/`'s 20 existing tests plus 21 new ones, 49k tokens (~$0.37). Code review of the PR then found two security gaps the automated gates cannot see (an unauthenticated admin endpoint; a client-chosen `Authorization` value used as the quota key) — which is what the acceptance gate and PR review are for, and it led to a SECURITY rule in the code-generation prompts | [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [pull request #3](https://github.com/ummarvali/AgenticSoftware/pull/3) |
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
@@ -792,6 +793,12 @@ Not enforced in this prototype (documented, would be required for production):
   than its slice implements (an async queue, a required header, role checks); the coverage
   table verifies endpoints, and the tests verify behaviour the model chose to test. Each
   live summary says so. A Critic agent is the next step.
+- **Security semantics are not verified by the gates.** The scan rejects dangerous calls and
+  the tests prove behaviour, but neither judges whether a design is safe: the brownfield
+  pipeline run ([PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3)) passed 6/6 and still exposed an unauthenticated admin endpoint
+  and trusted a client-chosen header as its rate-limit key — found at code review. The
+  code-generation prompts now carry explicit security rules; a security-review agent before
+  the acceptance gate is the next step, and human review of the pull request stays mandatory.
 - Generated code is validated on the platform the agent runs on. The recorded services were
   generated and gate-validated on Linux; CI re-tests them on Linux, and on Windows the
   scorecard reports that re-test as skipped (generated code is not guaranteed to be portable —
