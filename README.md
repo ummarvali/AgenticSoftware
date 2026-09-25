@@ -807,7 +807,10 @@ Not enforced in this prototype (documented, would be required for production):
 - On the live path the model is asked for the code, `openapi.yaml`, README and tests as one
   bundle (at most 12 files, so it fits one response). If it omits the contract or README, the
   Repair agent synthesizes them from the design, listing only endpoints found in the code.
-  The validator checks that a contract exists, not that it conforms to the code.
+  The validator checks that a contract exists, not that it conforms to the code — e.g. the
+  rate-limit change in [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) returns 429 but left `openapi.yaml` unchanged. Change-mode
+  validation now reports whether the change set updated the contract, and the change prompt
+  requires it whenever HTTP behaviour changes.
 - **Design decisions are not verified individually.** A model's design can describe more
   than its slice implements (an async queue, a required header, role checks); the coverage
   table verifies endpoints, and the tests verify behaviour the model chose to test. Each

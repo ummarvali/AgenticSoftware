@@ -95,12 +95,15 @@ class ValidatorAgent(Agent):
         # 4) Contract present when the design exposes an API.
         has_api = bool(bb.architecture and bb.architecture.api)
         contract_exists = (out / "openapi.yaml").exists()
-        checks.append(Check(
-            "api contract present",
-            (contract_exists or not has_api),
-            "openapi.yaml found" if contract_exists
-            else ("openapi.yaml missing" if has_api else "no API contract required"),
-        ))
+        contract_detail = ("openapi.yaml found" if contract_exists
+                           else ("openapi.yaml missing" if has_api else "no API contract required"))
+        if overlay is not None and contract_exists:
+            # Change mode: say whether the change set kept the contract in step, so a
+            # reviewer sees an API change that left openapi.yaml untouched.
+            touched = any(a.path == "openapi.yaml" for a in changed)
+            contract_detail += (" (updated by this change set)" if touched
+                                else " (not changed by this change set: confirm the API is unchanged)")
+        checks.append(Check("api contract present", (contract_exists or not has_api), contract_detail))
 
         # 5) Documentation present.
         docs_exist = any(a.kind == "docs" for a in bb.docs) or (
