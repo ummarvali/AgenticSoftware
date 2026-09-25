@@ -92,6 +92,7 @@ Pipeline runs on GitHub, plus four earlier live runs from the CLI, checked in ex
 | --- | --- |
 | **The pipeline, end to end on GitHub**: the mandatory requirement run in Actions — spend approved, live console, 5/5 checks with 28 model-written tests, 88.5k tokens (~$0.67), accepted, pull request opened | [Actions run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) (code under `generated/20260925-115009-176/`) |
 | **A brownfield change requested through the issue form** — "add rate limiting" to `demo/`: 6/6 checks, the change validated with `demo/`'s 20 existing tests plus 21 new ones, 49k tokens (~$0.37). Code review of the PR then found two security gaps the automated gates cannot see (an unauthenticated admin endpoint; a client-chosen `Authorization` value used as the quota key) — which is what the acceptance gate and PR review are for, and it led to a SECURITY rule in the code-generation prompts | [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) → [pull request #3](https://github.com/ummarvali/AgenticSoftware/pull/3) |
+| **The same request after that finding** — re-run once the SECURITY rule was in the prompts: 6/6 checks, 36 tests (20 existing + 16 new); limits are configuration only (no admin endpoint), and a client key counts only if it matches a server-side list, else the peer address is used. Verified by running it: the 4th request over a limit of 3 gets 429 with `Retry-After`, rotating fake keys stays at 429, `/admin/*` is 404. ~54k tokens (~$0.41) | [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [pull request #5](https://github.com/ummarvali/AgenticSoftware/pull/5) |
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
@@ -815,7 +816,8 @@ Not enforced in this prototype (documented, would be required for production):
   the tests prove behaviour, but neither judges whether a design is safe: the brownfield
   pipeline run ([PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3)) passed 6/6 and still exposed an unauthenticated admin endpoint
   and trusted a client-chosen header as its rate-limit key — found at code review. The
-  code-generation prompts now carry explicit security rules; a security-review agent before
+  code-generation prompts now carry explicit security rules, and the re-run
+  ([PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5)) closed both gaps; a security-review agent before
   the acceptance gate is the next step, and human review of the pull request stays mandatory.
 - **The task graph is for traceability more than execution granularity.** With a live model
   each stage is one model call (analysis, plan, design, code+tests), and most planned tasks
