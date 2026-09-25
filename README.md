@@ -37,25 +37,28 @@ Three ways in:
 
 | | How | What you need |
 | --- | --- | --- |
-| **A. Run it here, on GitHub** (recommended) | open an *Agent request* issue and pick a test case | a GitHub account — no install, no key |
+| **A. Run it here, on GitHub** (recommended) | open an *Agent request* issue and write a requirement | a GitHub account — no install, no key |
 | **B. Run it in your own fork** | fork, add your key as a secret, *Run workflow* | an Anthropic key, ~5 minutes of setup |
 | **C. Run it on your machine** | the CLI, with or without a key | Python 3.10+ |
 
 ### A. Run it here, on GitHub — no install, no key
 
-1. Open an issue from the **[Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)**, pick a test case and submit:
-   - *Greenfield: URL shortener* — the mandatory use case
-   - *Greenfield: another domain* — inventory with low-stock alerts
-   - *Brownfield enhancement* — add rate limiting to the existing service in `demo/`
-   - *Vague requirement* — "Make the app faster." against `demo/`
-   - *Custom* — your own new project, or your own bug fix / refactor / tests / docs for `demo/`
+1. Open an issue from the **[Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)**: write the **requirement** in plain
+   language (the mandatory URL shortener is pre-filled) and pick the **target** — *New project*
+   or *Change to demo/* (the existing URL shortener service). For example:
 
-   These cover the brief's scope: greenfield, brownfield (enhancement, and bug fix or refactor
-   as a custom change), and test and documentation improvements (custom change). Well-defined
-   vs ambiguous is **not something you select**: the RequirementAnalyst detects ambiguity in
-   whatever text arrives. A question with a sensible default becomes a recorded assumption; a
-   question with **no safe default** (what to change, what outcome defines done) is **asked on
-   the issue** before anything is built — step 3. The vague preset supplies such a requirement.
+   | Requirement | Target | Scope it shows |
+   | --- | --- | --- |
+   | `Build a scalable URL shortener service with APIs, persistence, and analytics.` | New project | greenfield — the mandatory use case |
+   | `Add rate limiting to the existing URL shortener API to prevent abuse.` | Change to demo/ | brownfield enhancement |
+   | a bug fix or a refactor of `demo/` | Change to demo/ | brownfield bug fix / refactoring |
+   | `Add tests for the error cases of the stats endpoint.` | Change to demo/ | test and documentation improvements |
+   | `Make the app faster.` | Change to demo/ | an ambiguous requirement |
+
+   You never classify the requirement. The agent decides whether it is new work or a change,
+   and whether it is clear enough to build: a question with a sensible default becomes a
+   recorded assumption; a question with **no safe default** (what to change, what outcome
+   defines done) is **asked on the issue** before anything is built — step 3.
 2. Within seconds the issue gets a link to its **pipeline run**. The run waits until the
    maintainer approves the spend (the `agent-run` gate: the model key is the maintainer's and
    is never visible to anyone, including in logs).
@@ -75,11 +78,11 @@ Three ways in:
    a **pull request** is opened and linked on your issue: a new project under
    `generated/<run-id>/`, or a brownfield change as a diff of the real `demo/` files.
 
-One issue runs one test case. To try several, open one issue per test case; they run in
-parallel, each with its own result comment and pull request.
+One issue is one requirement. To try several, open one issue each; they run in parallel,
+each with its own result comment and pull request.
 
 ```
-issue (test case) ─▶ ⏸ approve spend ─▶ agent analyses ─┬─▶ builds + validates ─▶ result on the issue ─▶ ⏸ accept ─▶ pull request
+issue (requirement) ─▶ ⏸ approve spend ─▶ agent analyses ─┬─▶ builds + validates ─▶ result on the issue ─▶ ⏸ accept ─▶ pull request
                                                         └─▶ blocking questions on the issue ─▶ "/answer …" ─▶ new run (builds)
 ```
 
@@ -632,7 +635,7 @@ AgenticSoftware/
 │  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
 ├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
 ├─ .github/workflows/agent.yml        The agent as a team pipeline: request → approval → run → acceptance → pull request
-├─ .github/ISSUE_TEMPLATE/agent-request.yml   The "Agent request" form: preset test cases or a custom requirement
+├─ .github/ISSUE_TEMPLATE/agent-request.yml   The "Agent request" form: a free-text requirement and its target
 ├─ src/agentic_sdlc/
 │  ├─ __init__.py                     Public API (run_pipeline, models)
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
@@ -970,10 +973,10 @@ The agent system is the application; a pipeline is how it is run and operated by
 [`.github/workflows/agent.yml`](.github/workflows/agent.yml).
 
 ```
-Request: an issue from the "Agent request" form (preset test cases or your own requirement)
+Request: an issue from the "Agent request" form (a requirement in plain language + its target)
          or Actions → "Agent pipeline" → Run workflow (maintainers)
    │
-   ├─ request     untrusted text parsed as data: preset scenario, length cap, allow-listed folder
+   ├─ request     untrusted text parsed as data: length cap, allow-listed target folder
    │
    ├─ ⏸ approval  GitHub Environment "agent-run": a maintainer approves spend before the key is used
    │
@@ -993,9 +996,9 @@ Request: an issue from the "Agent request" form (preset test cases or your own r
                     endings preserved) → PR with the summary as its description, linked on the issue
 ```
 
-**Try it (reviewers).** Open an issue → [*Agent request*](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml) → pick a test case — the mandatory URL
-shortener, another greenfield domain, a brownfield change to `demo/`, the vague "Make the
-app faster.", or your own requirement — and submit. The issue gets a link to the run; once a
+**Try it (reviewers).** Open an issue → [*Agent request*](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml) → write a requirement (the mandatory URL
+shortener is pre-filled; the table in TL;DR A has more, including the vague "Make the app
+faster.") and pick its target — and submit. The issue gets a link to the run; once a
 maintainer approves the spend, the agent analyses the requirement: if it has blocking
 questions it asks them on the issue (answer with `/answer …`, which starts the build);
 otherwise the console streams the build live and the result is posted back on the issue,

@@ -17,8 +17,8 @@
 # run this with the key. Anyone may open an issue, but an issue run waits for a required
 # reviewer of "agent-run" before the key is released, and that environment is limited to
 # the main branch, so a workflow edited on any other branch cannot reach the key either.
-# Issue text is untrusted: scripts/pipeline_request.py parses it (preset scenarios, a
-# length cap, an allow-listed target folder) and it reaches the agent only as data.
+# Issue text is untrusted: scripts/pipeline_request.py parses it (a length cap, an
+# allow-listed target folder) and it reaches the agent only as data.
 #
 # One-time setup (repository Settings):
 #   1. Environments → New environment "agent-run" → Required reviewers: the maintainers
@@ -65,7 +65,7 @@ concurrency:
 jobs:
   request:
     name: resolve the request
-    # Runs for: a maintainer's Run workflow; a new [agent] issue; or an "/answer" comment on an
+    # Runs for: a maintainer's Run workflow; a new [agent] issue; or a comment containing "/answer" on an
     # [agent] issue by the issue's author or a maintainer (other comments start nothing).
     if: >-
       github.event_name == 'workflow_dispatch'
@@ -73,7 +73,7 @@ jobs:
       || (github.event_name == 'issue_comment'
           && !github.event.issue.pull_request
           && startsWith(github.event.issue.title, '[agent]')
-          && startsWith(github.event.comment.body, '/answer')
+          && contains(github.event.comment.body, '/answer')
           && (github.event.comment.user.login == github.event.issue.user.login
               || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-latest

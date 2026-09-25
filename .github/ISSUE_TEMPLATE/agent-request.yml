@@ -7,31 +7,36 @@ body:
     attributes:
       value: |
         Keep the `[agent]` prefix in the title — it is what starts the run.
-        Opening this issue starts the **Agent pipeline** (Actions tab). A maintainer approves
-        the run before the model is called; the agent then plans, builds and validates, and
-        posts its result here. If your requirement leaves open what to build, the agent first
-        asks its questions here — reply with a comment starting with `/answer`.
-        If the maintainer accepts the result, a pull request follows.
-        A run takes about 6–12 minutes after approval.
-  - type: dropdown
-    id: scenario
-    attributes:
-      label: Scenario
-      description: Pick a preset test case, or a custom one and write the requirement below. Ambiguity is not something you select — the agent detects it in the requirement text and records its assumptions.
-      options:
-        - "Greenfield: URL shortener (the mandatory use case)"
-        - "Greenfield: another domain (inventory with low-stock alerts)"
-        - "Brownfield enhancement: add rate limiting to demo/"
-        - "Vague requirement: \"Make the app faster.\" against demo/ (the agent must detect the ambiguity)"
-        - "Custom: new project (write the requirement below)"
-        - "Custom: change to demo/ — bug fix, refactor, tests or docs (write it below)"
-    validations:
-      required: true
+
+        Write your requirement in plain language and pick where it applies. You do not
+        classify it: the agent works out whether it is new work or a change, and whether it is
+        clear enough to build. If it leaves open *what* to build, the agent asks its questions
+        here first — reply with a comment that starts with `/answer`.
+
+        Examples:
+        - `Build a scalable URL shortener service with APIs, persistence, and analytics.` → **New project** (the mandatory use case)
+        - `Add rate limiting to the existing URL shortener API to prevent abuse.` → **Change to demo/**
+        - `Add tests for the error cases of the stats endpoint.` or a bug fix / refactor → **Change to demo/**
+        - `Make the app faster.` → **Change to demo/** (vague on purpose: expect questions first)
+
+        A maintainer approves each run before the model is called. The result is posted here,
+        and if the maintainer accepts it, a pull request follows (about 6–12 minutes per run).
   - type: textarea
     id: requirement
     attributes:
       label: Requirement
-      description: Required for the custom scenarios; for a preset it replaces the preset text. Plain language, up to 2000 characters.
-      placeholder: "e.g. Add an endpoint to delete a short link, with tests"
+      description: Plain language, up to 2000 characters.
+      value: "Build a scalable URL shortener service with APIs, persistence, and analytics."
     validations:
-      required: false
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target
+      description: A new project, or a change to the existing service in this repository.
+      options:
+        - "New project"
+        - "Change to demo/ (the existing URL shortener service)"
+      default: 0
+    validations:
+      required: true

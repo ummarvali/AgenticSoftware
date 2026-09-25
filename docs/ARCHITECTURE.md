@@ -201,7 +201,7 @@ flowchart LR
 
 | Concern | How the pipeline handles it |
 | --- | --- |
-| Untrusted input | Issue text is parsed as data: preset scenarios, a length cap, an allow-listed target folder; it reaches the agent only through environment variables. |
+| Untrusted input | Issue text is parsed as data: a free-text requirement with a length cap and an allow-listed target folder; it reaches the agent only through environment variables. |
 | The model key | An environment secret of `agent-run` (main branch only), handed to the agent as a file that it reads and deletes, so it is never in the agent's initial environment and model-written tests cannot read it from `/proc`. |
 | Least privilege | The agent job has a read-only token and keeps no credentials in the checkout; only the acceptance job can write, and it never executes generated code. |
 | Ambiguity | A new issue runs *ask-first*: questions the analysis marks as blocking (no safe default) are posted on the issue and nothing is built; an `/answer` comment by the author or a maintainer starts a run with the answers that builds without asking again. Other open questions become recorded assumptions. |

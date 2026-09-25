@@ -2,7 +2,7 @@
 
 The primary way to run these is the **GitHub Actions pipeline**: open an issue from the
 [Agent request form](https://github.com/ummarvali/AgenticSoftware/issues/new?template=agent-request.yml)
-and pick the matching test case (examples: [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) greenfield, [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) →
+write the requirement and pick its target (examples: [PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1) greenfield, [issue #2](https://github.com/ummarvali/AgenticSoftware/issues/2) →
 [PR #3](https://github.com/ummarvali/AgenticSoftware/pull/3) and [issue #4](https://github.com/ummarvali/AgenticSoftware/issues/4) → [PR #5](https://github.com/ummarvali/AgenticSoftware/pull/5) brownfield, [issue #6](https://github.com/ummarvali/AgenticSoftware/issues/6) →
 [PR #7](https://github.com/ummarvali/AgenticSoftware/pull/7) ambiguous). Four earlier CLI runs on the live model are described in
 [§4](#4-live-model--examplesllm-run-recorded). The three requirement files below exercise

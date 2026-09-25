@@ -3,8 +3,8 @@
 Three ways in:
 
 * ``workflow_dispatch`` — a maintainer fills in the requirement, repo folder and provider;
-* an issue opened from the *Agent request* form — anyone (for example a reviewer) picks a
-  preset scenario or writes a requirement. The run is *ask-first*: if the analysis finds a
+* an issue opened from the *Agent request* form — anyone (for example a reviewer) writes a
+  requirement and picks its target (new project, or a change to demo/). The run is *ask-first*: if the analysis finds a
   question with no safe default, the agent asks it on the issue instead of guessing;
 * an ``/answer`` comment on that issue (by its author or a maintainer) — the original
   requirement plus the answers are built, without asking again.
@@ -32,9 +32,16 @@ MAX_REQUIREMENT = 2000
 MAX_ANSWERS = 2000
 ISSUE_TARGETS = {"": "", "demo": "demo"}          # folders an issue may target
 
-# Preset scenarios offered by the issue form (.github/ISSUE_TEMPLATE/agent-request.yml).
-# Keys must match the form's dropdown options exactly.
-SCENARIOS: dict[str, tuple[str, str]] = {
+# The issue form (.github/ISSUE_TEMPLATE/agent-request.yml) asks for a free-text requirement
+# and a target; keys must match the form's "Target" options exactly.
+TARGETS: dict[str, str] = {
+    "New project": "",
+    "Change to demo/ (the existing URL shortener service)": "demo",
+}
+
+# Issues opened with the earlier form (a "Scenario" dropdown of presets) are still read, so an
+# /answer on such an issue keeps working.
+LEGACY_SCENARIOS: dict[str, tuple[str, str]] = {
     "Greenfield: URL shortener (the mandatory use case)": (
         (ROOT / "examples" / "greenfield.txt").read_text(encoding="utf-8").strip(), ""),
     "Greenfield: another domain (inventory with low-stock alerts)": (
@@ -60,10 +67,18 @@ def _form_fields(body: str) -> dict[str, str]:
 
 def _from_issue(body: str) -> tuple[str, str, str]:
     fields = _form_fields(body)
+    if "Target" in fields:
+        target = fields["Target"]
+        if target not in TARGETS:
+            raise ValueError("unknown target; use the Agent request issue form")
+        requirement = fields.get("Requirement", "").strip()
+        if not requirement:
+            raise ValueError("write a requirement in the Requirement box")
+        return requirement, TARGETS[target], "claude"
     scenario = fields.get("Scenario", "")
-    if scenario not in SCENARIOS:
-        raise ValueError("unknown scenario; use the Agent request issue form")
-    requirement, repo_path = SCENARIOS[scenario]
+    if scenario not in LEGACY_SCENARIOS:
+        raise ValueError("unknown request format; use the Agent request issue form")
+    requirement, repo_path = LEGACY_SCENARIOS[scenario]
     written = fields.get("Requirement", "").strip()
     if not requirement:
         requirement = written
@@ -90,11 +105,11 @@ def _from_dispatch() -> tuple[str, str, str]:
 
 
 def _answers(comment: str) -> str:
-    """The text after a leading '/answer' command."""
-    text = comment.strip()
-    if not text.lower().startswith("/answer"):
-        raise ValueError("an answer comment must start with /answer")
-    text = text[len("/answer"):].strip()
+    """The text after the '/answer' command (tolerates leading blank lines, quotes and code fences)."""
+    m = re.search(r"^[\s>`]*/answer\b(.*)", comment, re.I | re.S | re.M)
+    if not m:
+        raise ValueError("an answer comment must contain /answer at the start of a line")
+    text = m.group(1).replace("```", "").strip()
     if not text:
         raise ValueError("write your answers after /answer (or '/answer use the defaults')")
     if len(text) > MAX_ANSWERS:
@@ -150,8 +165,9 @@ def questions(run_dir: str) -> int:
         if q.get("why_it_matters"):
             lines.append(f"   Why it matters: {q['why_it_matters']}")
         lines.append(f"   If you prefer the default: *{q.get('default_assumption', '')}*")
-    lines += ["", "Reply with a comment that starts with `/answer`, for example:", "",
-              "```", "/answer", "1. ...", "2. ...", "```", "",
+    lines += ["", "Reply with a comment that starts with `/answer` (plain text, no code block "
+              "needed), for example:", "",
+              "> /answer", "> 1. ...", "> 2. ...", "",
               "or `/answer use the defaults` to go ahead with the defaults above. "
               "Your answer starts a new run with the requirement plus your answers "
               "(a maintainer approves it, as before)."]
