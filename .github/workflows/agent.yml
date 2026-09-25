@@ -1,0 +1,147 @@
+# The agent as a team pipeline — the production operating model.
+#
+# Nobody runs the model from a laptop or holds the key: a requirement is submitted here,
+# the agent runs in CI with the key from GitHub Secrets, its engineering summary is
+# published on the run page, and the run then WAITS for a human to approve it (GitHub
+# Environment "agent-acceptance" with required reviewers). Only an approved run is turned
+# into a pull request — so the proposal lands in normal code review and normal CI.
+#
+# One-time setup (repository Settings):
+#   1. Secrets and variables → Actions → New repository secret: ANTHROPIC_API_KEY
+#      (or OPENAI_API_KEY for provider=openai).
+#   2. Environments → New environment "agent-acceptance" → Required reviewers: the
+#      people allowed to accept agent output.
+#   3. Actions → General → Workflow permissions: "Read and write" and
+#      "Allow GitHub Actions to create and approve pull requests".
+name: Agent pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      requirement:
+        description: "Requirement in plain language"
+        required: true
+        default: "Build a scalable URL shortener service with APIs, persistence, and analytics."
+      repo_path:
+        description: "Brownfield: folder in this repository to change (e.g. demo). Leave empty for greenfield."
+        required: false
+        default: ""
+      provider:
+        description: "Reasoning backend"
+        required: true
+        default: claude
+        type: choice
+        options: [claude, openai, deterministic]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-pipeline          # one live run at a time: bounded spend
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    name: agent run (plan → build → validate → summarize)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      run_id: ${{ steps.agent.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (model SDKs are optional extras)
+        run: python -m pip install -e ".[anthropic,llm]"
+      - name: Run the agent (non-interactive; human approval happens in the next job)
+        id: agent
+        env:
+          # The key reaches only this job, only for this step, never the approval job.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PYTHONPATH: src
+          # Inputs are passed as environment variables, never interpolated into the
+          # script, so a crafted requirement cannot inject shell commands.
+          REQUIREMENT: ${{ inputs.requirement }}
+          REPO_PATH: ${{ inputs.repo_path }}
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          set +e
+          # Fail fast if the chosen model has no key: otherwise every stage would fall
+          # back to the deterministic engine and template output would reach review.
+          if [ "$PROVIDER" = claude ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::secret ANTHROPIC_API_KEY is not set"; exit 1; fi
+          if [ "$PROVIDER" = openai ] && [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::secret OPENAI_API_KEY is not set"; exit 1; fi
+          args=(--provider "$PROVIDER" --output-root runs)
+          if [ -n "$REPO_PATH" ]; then args+=(--repo "$REPO_PATH"); fi
+          # "--" so a requirement starting with "-" is never read as an option.
+          python -u -m agentic_sdlc "${args[@]}" -- "$REQUIREMENT"
+          rc=$?
+          run_dir=$(ls -d runs/* | tail -1)
+          # A model run is only reviewable if the model did the work: any stage that
+          # fell back to the deterministic engine fails the job before the gate.
+          if [ $rc -eq 0 ] && [ "$PROVIDER" != deterministic ]; then
+            python - "$run_dir/result.json" <<'PY' || rc=1
+          import json, sys
+          llm = json.load(open(sys.argv[1]))["metrics"].get("llm") or {}
+          if llm.get("fallbacks", 1):
+              print("::error::a model stage fell back to the deterministic engine "
+                    f"(fallbacks={llm.get('fallbacks')}); not sending it for acceptance")
+              sys.exit(1)
+          PY
+          fi
+          echo "run_id=$(basename "$run_dir")" >> "$GITHUB_OUTPUT"
+          if [ -f "$run_dir/artifacts/ENGINEERING_SUMMARY.md" ]; then
+            cat "$run_dir/artifacts/ENGINEERING_SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $rc   # a failing or halted run never reaches the approval gate
+      - name: Publish the run record (always — failures are evidence too)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-run
+          path: runs/
+          retention-days: 30
+
+  accept:
+    name: human acceptance → pull request
+    needs: run-agent
+    runs-on: ubuntu-latest
+    environment: agent-acceptance      # pauses here until a required reviewer approves
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-run
+          path: runs/
+      - name: Apply the accepted proposal to a branch and open a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.run-agent.outputs.run_id }}
+          REQUIREMENT: ${{ inputs.requirement }}
+          REPO_PATH: ${{ inputs.repo_path }}
+        run: |
+          set -euo pipefail
+          branch="agent/${RUN_ID}"
+          git config user.name "agentic-sdlc[bot]"
+          git config user.email "agentic-sdlc@users.noreply.github.com"
+          git checkout -b "$branch"
+          if [ -n "$REPO_PATH" ]; then
+            python scripts/apply_change.py "runs/${RUN_ID}" --repo "$REPO_PATH"
+          else
+            python scripts/apply_change.py "runs/${RUN_ID}"
+          fi
+          git add -A
+          git commit -m "Agent proposal ${RUN_ID}: ${REQUIREMENT:0:60}"
+          git push origin "$branch"
+          gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
+            --title "Agent: ${REQUIREMENT:0:70}" \
+            --body-file "runs/${RUN_ID}/artifacts/ENGINEERING_SUMMARY.md"

@@ -11,7 +11,8 @@ engineering summary, all under **controlled autonomy** (agents act, humans appro
 > persistence, and analytics."* — and it also handles greenfield work, brownfield changes
 > to an existing repository (enhancements, bug fixes, refactors, test and documentation
 > improvements — proposed as a validated change set, never applied), and ambiguous
-> requirements.
+> requirements. (Recorded brownfield evidence: one enhancement; bug fixes and refactors take
+> the same change-mode path but are not recorded.)
 
 - **Model-driven by design** — a live LLM (Claude / OpenAI / Azure / any OpenAI-compatible
   endpoint) analyses the requirement, plans the task graph, designs the architecture and
@@ -31,12 +32,14 @@ engineering summary, all under **controlled autonomy** (agents act, humans appro
 system was built and tested:
 
 ```bash
-git clone https://github.com/ummarvali/AgenticSoftware && cd AgenticSoftware
+git clone https://github.com/ummarvali/AgenticSoftware
+cd AgenticSoftware
+python3 -m venv .venv                              # PowerShell: python -m venv .venv
+source .venv/bin/activate                          # PowerShell: .venv\Scripts\Activate.ps1
 pip install -e ".[anthropic]"                      # or ".[llm]" for OpenAI / Azure / Gemini
 export ANTHROPIC_API_KEY="<your key>"              # PowerShell: $env:ANTHROPIC_API_KEY = "<your key>"
-export PYTHONPATH=src
-python3 -m agentic_sdlc --provider claude --file examples/greenfield.txt
-python3 -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
+python -m agentic_sdlc --provider claude --file examples/greenfield.txt
+python -m agentic_sdlc --provider claude --interactive --file examples/greenfield.txt   # approve each of the 3 gates yourself
 ```
 
 A run takes ~5–12 minutes. The recorded runs used `claude-sonnet-5` and cost $0.41–0.53 each
@@ -60,8 +63,9 @@ final code, are checked in exactly as they came out of `runs/`:
 | The mandatory URL shortener: code and tests **authored by the model**, sandbox-validated | [`examples/llm-run/`](examples/llm-run/) — `artifacts/` (SQLite-backed service + its own tests) and `result.json` (per-stage tokens, latency, cost, retries, fallbacks) |
 | A different domain through the same agents (inventory + low-stock alerts) | [`examples/llm-run-inventory/`](examples/llm-run-inventory/) |
 | **Brownfield**: a change to an existing repository (`--repo demo`, "add rate limiting") — the model returns only the changed files, validated with demo's own tests re-run on a copy with the change applied | [`examples/llm-run-brownfield/`](examples/llm-run-brownfield/) — `CHANGES.diff`, the changed files, and the *Proposed change set* table in `ENGINEERING_SUMMARY.md` |
-| The hardest case: a **Go** target — the design records Go, the validated slice is Python (stated as a limitation), and its model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
+| A limit made explicit: a **Go** requirement — the design records Go, the validated slice is Python (stated as a limitation in the summary), and its model-written tests pass | [`examples/llm-run-go-card-validator/`](examples/llm-run-go-card-validator/) |
 | The report every run ends with: plan, rationale, design↔implementation coverage, validation, risks, trade-offs, assumptions, limitations | `artifacts/ENGINEERING_SUMMARY.md` in each folder above |
+| **The production operating model**: the agent as a team pipeline — key in GitHub Secrets, human approval via a GitHub Environment, output as a pull request | [`.github/workflows/agent.yml`](.github/workflows/agent.yml), README [§12](#12-operating-this-in-production--the-sre-view) |
 | How the agent is built and why | [§4](#4-how-it-works--architecture--control-flow), [§8](#8-risks-trade-offs--validation), [§12](#12-operating-this-in-production--the-sre-view) |
 
 Each generated service runs on its own (`examples/llm-run*/artifacts/README.md` says how),
@@ -86,7 +90,7 @@ The fallback's output for the mandatory requirement is committed as [`demo/`](de
 service you can start in ten seconds:
 
 ```bash
-cd demo && python -m url_shortener.server          # http://127.0.0.1:8000
+cd demo && python -m url_shortener.server          # http://127.0.0.1:8000 — run the curls below in a second terminal
 curl -X POST http://127.0.0.1:8000/api/shorten -H "Content-Type: application/json" -d "{\"url\": \"https://example.com/a/very/long/path\"}"
 curl -i http://127.0.0.1:8000/<code>               # 302 redirect
 curl http://127.0.0.1:8000/api/stats/<code>        # click analytics
@@ -94,6 +98,9 @@ curl http://127.0.0.1:8000/api/stats/<code>        # click analytics
 
 Containers: `docker build -t agentic-sdlc .` (the agent; pass `-e ANTHROPIC_API_KEY` for the
 live mode) and `docker build -t url-shortener demo` (the demo service).
+
+**Team pipeline:** Actions → *Agent pipeline* → Run workflow — the key stays in GitHub
+Secrets, a named reviewer approves, the output arrives as a pull request. Setup in [§12](#12-operating-this-in-production--the-sre-view).
 
 ---
 
@@ -151,13 +158,8 @@ duration, task count, retries, repairs, degradations, and gate decisions — plu
 latency, cost, and fallback count when a model is used (printed and saved in `result.json`).
 Failures can be **injected on demand** (`--inject-fault code:1`) to demonstrate recovery.
 
-This is the SRE stance made concrete: an agent that is **LLM-first but never LLM-dependent**.
-For **generation**, the model authors the whole project *from the requirement*; the provider
-then **compiles it and runs its tests in a throwaway sandbox** and accepts it only if it
-passes. If the sandbox rejects it, the compiler/test output goes back to the model as a
-**repair brief (one bounded pass)**; only a second rejection falls back to a verified
-template. So generation is genuinely requirement→code, while the demo stays
-guaranteed-runnable.
+This is the SRE stance made concrete: generation is genuinely requirement→code, and the
+sandbox gate (§8) decides whether the model's code is accepted.
 
 ---
 
@@ -174,7 +176,7 @@ guaranteed-runnable.
 9. [Assumptions & limitations](#9-assumptions--limitations)
 10. [Requirement-coverage matrix](#10-requirement-coverage-matrix)
 11. [Extending the system](#11-extending-the-system)
-12. [Operating this in production — the SRE view](#12-operating-this-in-production--the-sre-view)
+12. [Operating this in production — the SRE view](#12-operating-this-in-production--the-sre-view) — the team pipeline (`agent.yml`)
 
 ---
 
@@ -217,7 +219,7 @@ Or drive it yourself — **Linux / macOS / WSL**:
 cd AgenticSoftware
 export PYTHONPATH=src
 python3 -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
-python3 -m unittest discover -s tests -v          # 54 framework tests
+python3 -m unittest discover -s tests -v          # 72 framework tests
 python3 -m agentic_sdlc --interactive --file examples/greenfield.txt   # human approves each gate
 ```
 
@@ -255,7 +257,7 @@ python -m pip install -e ".[dev]"; pytest        # or with pytest
 
 **Run on a real model (Claude):**
 
-The system was developed and exercised end to end against a real Anthropic key; the three
+The system was developed and exercised end to end against a real Anthropic key; the four
 recorded runs under `examples/llm-run*/` are the evidence. **No key is committed anywhere in
 this repository and none is needed to run, test or evaluate it** — without a key the same
 pipeline runs on the deterministic engine. To reproduce a live run yourself:
@@ -283,12 +285,7 @@ for a model with no known price the breaker assumes the most expensive rate in t
 if tripped, remaining stages degrade to the deterministic engine and the record says so.
 
 Keys are read **only** from the environment and are never written to disk or to
-`result.json`. Four recorded live-model runs are checked in under
-[`examples/llm-run*/`](examples/) (URL shortener, inventory service, Go card validator, and a
-brownfield change set against `demo/`) so the
-model-driven path can be inspected without a key — each `result.json` carries the real
-per-stage tokens, latency, cost, retries and fallback counts. To refresh one after your own
-run: `python scripts/snapshot_run.py --name llm-run` (copies the latest run and scrubs
+`result.json`. To refresh a recorded run under `examples/` after your own run: `python scripts/snapshot_run.py --name llm-run` (copies the latest run and scrubs
 anything key-shaped).
 
 **CLI flags:** `--file <path>`, `--repo <path>` (brownfield: propose a change set against this repository), `--interactive`,
@@ -296,10 +293,6 @@ anything key-shaped).
 `--sequential` (disable in-level concurrency), `--output-root <dir>`, `--quiet`, `--json`
 (machine-readable result on stdout, logs suppressed). Exit status is 0 only for a validated,
 accepted run — usable as a CI step.
-
-Every run writes to `runs/<run-id>/`:
-`artifacts/` (the generated project) + `result.json` (full machine-readable record) +
-`artifacts/ENGINEERING_SUMMARY.md` (the human-readable deliverable).
 
 ---
 
@@ -488,7 +481,7 @@ Highlights:
 AgenticSoftware/
 ├─ Dockerfile / .dockerignore         Container image for the agent itself (`docker run agentic-sdlc …`)
 ├─ pyproject.toml                     Package metadata, entry point, pytest config
-├─ requirements.txt                   Optional extras only (dev=pytest, llm=openai)
+├─ requirements.txt                   Optional extras only (dev=pytest, llm=openai, anthropic=anthropic)
 ├─ .gitignore                         Excludes caches, venvs, and generated runs/
 ├─ README.md                          This document
 ├─ LICENSE                            MIT
@@ -510,8 +503,10 @@ AgenticSoftware/
 │  ├─ demo.py                          One-command narrated demo (all scenarios + monitoring)
 │  ├─ evaluate.py                      Evaluation scorecard: quality / adherence / efficiency; re-tests every recorded live run
 │  ├─ verify_change.py                 Re-verify a recorded brownfield change set against its repository
+│  ├─ apply_change.py                  Apply an accepted run to a branch (used by the pipeline's approval job)
 │  └─ snapshot_run.py                  Copy a run into examples/ as a committed record
 ├─ .github/workflows/ci.yml           CI: tests on Linux+Windows, py3.10/3.12; e2e runs; Docker smoke test
+├─ .github/workflows/agent.yml        The agent as a team pipeline: run → human approval → pull request
 ├─ src/agentic_sdlc/
 │  ├─ __init__.py                     Public API (run_pipeline, models)
 │  ├─ __main__.py                     Enables `python -m agentic_sdlc`
@@ -565,7 +560,7 @@ AgenticSoftware/
 
 ## 7. Testing approach
 
-Correctness and output quality are validated at **three** levels:
+Correctness and output quality are validated at **four** levels:
 
 1. **Framework tests** (`tests/`, 72 cases, `unittest`): classification accuracy, DAG
    topology + cycle/dangling guards, artifact-sandbox enforcement, compilation detection,
@@ -641,7 +636,7 @@ Try them: `--inject-fault code:1` (retry), `--inject-fault docs:9` (degrade),
 
 | Risk | Control in this system | Honest gap |
 | --- | --- | --- |
-| **Hallucinated code** (invented APIs, imports, behaviour) | Model-authored code is written to a throwaway sandbox, **scanned, compiled, and its own tests executed** before it is accepted; failure → the sandbox output is returned to the model as a repair brief (one pass); second failure → verified template, recorded as a `codegen` fallback | — |
+| **Hallucinated code** (invented APIs, imports, behaviour) | Model-authored code is written to a throwaway sandbox, **scanned, compiled, and its own tests executed** before it is accepted; failure → the sandbox output is returned to the model as a repair brief (one pass); second failure → verified template, recorded as a `codegen` fallback | The same model writes the code and its tests, so the tests verify the behaviour it chose to test, not the requirement itself (§9) |
 | **Hallucinated plan / design** | Plan: schema-checked JSON, task-category allow-list, required stages, validation made to depend on the work, acyclic check, else deterministic plan. Design: typed parsing. Analysis: every ambiguity becomes an *explicit default assumption* a human sees at the clarification gate, and the **same FRs/NFRs/assumptions are passed to the design and codegen stages** so later stages cannot silently re-open them | — |
 | **Design promises more than the code delivers** | The design prompt pins the **implementation target** (Python standard library, single process, in-memory/SQLite) so the model cannot decide on a stack the slice will not implement — production evolutions go to trade-offs, phrased as prototype-vs-production; the summary computes **design ↔ implementation coverage** (which designed endpoints the generated slice actually serves), the repaired API contract documents only implemented endpoints, standing **risks are derived from the produced slice** (its persistence, its auth) rather than copied from the design, a requirement naming a non-Python target gets an explicit limitation line, and every live summary states that individual design decisions are *not* verified against the code | The model's design decisions (e.g. "async queue", "required Idempotency-Key header") are not all implemented by its code; only endpoints, compilation, the scan and the model's own tests are verified. A Critic agent (semantic design↔code↔tests review) is the next step |
 | **Drift within a run** (scope creep, loops) | One output schema per agent; agents cannot add tasks; the DAG bounds the work; `reuse` decisions prevent repeated work; bounded repair iterations; call + cost circuit breaker | — |
@@ -658,7 +653,7 @@ requirements. `result.json` is the durable *audit record*, not memory. A long-te
 `CodebaseAnalyst`.
 
 **Why no MCP / model tool-calling.** The model never invokes tools; it returns structured data
-(JSON for analysis, plans and designs; file blocks for code) and the orchestrator acts on it. There is therefore no prompt-injection-to-tool-call path. MCP
+(JSON for analysis, plans and designs; file blocks for code) and the orchestrator acts on it. There is no tool-call path; the remaining path is model-authored code executed in the validation sandbox (see Security). MCP
 becomes the right choice when the agent must reach Jira, GitHub or a repository in production —
 through the firm's gateway, with allow-listed servers.
 
@@ -694,8 +689,8 @@ Enforced:
   outside it (e.g. `../../etc/passwd`, absolute paths) is rejected (`ArtifactStore`).
 - **Untrusted model output is treated as data**: lenient JSON parsing with schema-shaped
   validation, an allow-list of task categories, and the scan+compile+test gate before any
-  model-authored code is accepted. Prompt-injected instructions in a requirement can at
-  most produce a plan or code that the guardrails above reject.
+  model-authored code is accepted. Prompt-injected instructions can still produce code that
+  passes the scan and runs in the sandbox, which is not network-isolated (see below).
 - **Bounded execution**: per-call timeouts, bounded retries, bounded repair iterations,
   bounded spend.
 - **Human approval gates** at clarification, plan, and acceptance; a rejection halts.
@@ -768,7 +763,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Error handling & recovery | `orchestrator._run_task` (retry / degrade / halt) + `_repair_loop` (validation feedback) |
 | Agent autonomy (perceive → decide → act) | `agents/base.py`, `decision` events per agent |
 | Code / API contract / tests / docs | LLM-authored + sandbox-gated (`llm/llm_provider.py`); verified template (`knowledge/url_shortener.py`) |
-| Validation & guardrails | `agents/validator.py` (5 checks incl. AST safety scan), `tools/*`, sandbox + timeout |
+| Validation & guardrails | `agents/validator.py` (5 checks greenfield, 6 in change mode, incl. AST safety scan), `tools/*`, sandbox + timeout |
 | Controlled autonomy (human oversight) | `hitl/approval.py`, three gates in `orchestrator.py` |
 | Final structured engineering summary (plan as executed, rationale + decision log, artifacts, **validation approach + per-check results**, run monitoring, risks, trade-offs, assumptions, limitations) | `agents/summary.py`, `ENGINEERING_SUMMARY.md`, `result.json` |
 | LLM reasoning + reliability fallback | `llm/llm_provider.py`, `llm/client.py` |
@@ -777,6 +772,7 @@ Not enforced in this prototype (documented, would be required for production):
 | Concurrent execution of independent tasks | `orchestrator._execute` (thread per task per DAG level), `Blackboard._lock` |
 | Evidence of the model-driven path | `examples/llm-run*/result.json` — three greenfield domains and one brownfield change set (tokens, latency, cost, retries, per-stage fallbacks). The codegen repair pass is exercised by `tests/test_llm_provider.py` and, when a model bundle is rejected, recorded in `metrics.llm.calls` |
 | Reproducibility / CI | `.github/workflows/ci.yml` — Linux + Windows, e2e scenarios, Docker smoke test |
+| Controlled autonomy in a team setting | `.github/workflows/agent.yml` — agent run in CI, GitHub Environment approval, PR on acceptance |
 | Spend circuit breaker (abuse guard, not a budget) | `llm_provider._budget_check` — `AGENTIC_LLM_MAX_CALLS` / `AGENTIC_LLM_MAX_COST_USD` |
 | Evaluation (quality / adherence / tool correctness / efficiency) | `scripts/evaluate.py` (CI step), `tests/test_tools.py` |
 | AI-risk controls (hallucination / drift / overreach) | sandbox gate, schema + allow-list, bounded loops, least-privilege tools, human gates — §8 |
@@ -807,12 +803,42 @@ Not enforced in this prototype (documented, would be required for production):
 
 ## 12. Operating this in production — the SRE view
 
-The agent system is the application; a pipeline is how it would be run and operated.
+The agent system is the application; a pipeline is how it is run and operated by a team.
+**That pipeline is implemented in this repository:**
+[`.github/workflows/agent.yml`](.github/workflows/agent.yml).
 
-- **Hosting & triggers:** run the orchestrator as a job (Argo Workflows / Kubernetes Job /
-  GitHub Actions runner — the root `Dockerfile` is the unit of deployment) triggered by a
-  ticket, a PR comment, or an API call; GitHub Environments or a ticketing hook implement
-  the three human gates through the `ApprovalGate` seam.
+```
+Actions → "Agent pipeline" → Run workflow (requirement, optional repo folder, provider)
+   │
+   ├─ job 1  agent run      key from GitHub Secrets (this job only) · live [LLM] console trail
+   │                         engineering summary published on the run page · run record uploaded
+   │                         a failing or halted run, a missing key, or any model stage that fell
+   │                         back to the deterministic engine stops here — never offered for approval
+   │
+   ├─ job 2  ⏸ approval      GitHub Environment "agent-acceptance": required reviewers approve
+   │                         or reject after reading the summary (the human acceptance gate)
+   │
+   └─ (job 2, after approval) pull request
+                             approved change set applied to a branch (scripts/apply_change.py,
+                             line endings preserved) → PR with the summary as its description
+```
+
+What this changes compared with running the CLI on a laptop: nobody holds the model key (it
+lives in the secret store and reaches one step of one job); every run is an auditable CI run
+with its console log, summary and `result.json` retained; acceptance is a recorded approval
+by a named reviewer; the output enters the normal review path as a pull request; and one run
+at a time (`concurrency`) bounds spend. Requirement text is passed to the job as an
+environment variable, never interpolated into the script, so it cannot inject shell commands.
+
+One-time setup (repository Settings): add the `ANTHROPIC_API_KEY` secret; create the
+`agent-acceptance` environment with required reviewers; allow GitHub Actions to create pull
+requests (Actions → General → Workflow permissions). Pull requests opened with the default
+`GITHUB_TOKEN` do not trigger other workflows — a GitHub App token would let CI run on them
+automatically.
+
+- **Hosting & triggers:** the same job runs anywhere a container runs (Argo Workflows /
+  Kubernetes Job — the root `Dockerfile` is the unit of deployment), triggered by a ticket, a
+  PR comment or an API call; any approval system plugs in through the `ApprovalGate` seam.
 - **SLOs for the agent itself:** run success rate, validation pass rate, LLM fallback rate,
   p95 run duration, cost per run — all already emitted in `result.json` (`metrics.run`,
   `metrics.llm`) and ready to ship to Prometheus/OpenTelemetry.
