@@ -15,7 +15,8 @@ result.
 ```mermaid
 flowchart TB
     subgraph Entry
-        CLI[CLI / run_pipeline]
+        GHA[GitHub Actions pipeline\nagent.yml: issue → approve → run]
+        CLI[CLI - python -m agentic_sdlc]
     end
 
     subgraph Orchestration
@@ -50,6 +51,7 @@ flowchart TB
         RUN[CodeRunner\ncompile + isolated unittest]
     end
 
+    GHA --> CLI
     CLI --> ORCH
     ORCH <--> BB
     ORCH --> GATE
@@ -85,28 +87,50 @@ The orchestrator runs three phases:
 
 ```mermaid
 sequenceDiagram
-    participant H as Human
+    participant H as Maintainer
+    participant P as GitHub pipeline
     participant O as Orchestrator
     participant A as Agents
+    participant C as Claude
     participant B as Blackboard
+    P->>H: agent-run approval (spend)
+    H->>P: approve
+    P->>O: run the requirement
     O->>A: analyze requirement
+    A->>C: analyze
     A->>B: write analysis + assumptions
-    O->>H: clarification gate
+    O->>O: clarification gate (auto in the pipeline, human with --interactive)
     O->>A: decompose -> task DAG
-    O->>H: plan gate
+    A->>C: plan
+    O->>O: plan gate
     loop each dependency level
         O->>A: run task (retry on failure)
+        A->>C: design / code + tests (sandbox gate on model code)
         A->>B: read inputs / write outputs
     end
     O->>A: validate (scan, compile, run tests)
     opt repairable gap
         O->>A: repair, then re-validate (bounded)
     end
-    O->>H: acceptance gate
+    O->>O: acceptance gate (never accepts a failing report)
     O->>B: persist result.json + summary
+    P->>H: result on the issue, then agent-acceptance approval
+    H->>P: accept
+    P->>P: open the pull request
 ```
 
+If a model call fails (timeout, error, malformed reply), that stage falls back to the
+deterministic engine and the run records it; in the pipeline such a run is stopped before
+acceptance.
+
 ## 4. The DAG (mandatory URL-shortener example)
+
+On the live model the plan is the model's own: for this requirement, 29 tasks in 13
+dependency levels (requirements → architecture → data model and short-code algorithm → code,
+API contract, analytics, caching, security → tests → docs → validation → summary; see the
+*Implementation Plan* in `examples/llm-run/artifacts/ENGINEERING_SUMMARY.md` or in
+[PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1)). The offline engine's plan is
+the compact form of the same shape:
 
 ```
 design ──┬─► code ──► tests ──┐

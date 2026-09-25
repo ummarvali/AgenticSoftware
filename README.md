@@ -62,6 +62,9 @@ Three ways in:
    a **pull request** is opened and linked on your issue: a new project under
    `generated/<run-id>/`, or a brownfield change as a diff of the real `demo/` files.
 
+One issue runs one test case. To try several, open one issue per test case; they run in
+parallel, each with its own result comment and pull request.
+
 ```
 issue (test case) ─▶ ⏸ approve spend ─▶ agent run in Actions ─▶ result on the issue ─▶ ⏸ accept ─▶ pull request
 ```
@@ -394,49 +397,76 @@ and `examples/llm-run*/` (four recorded live-model runs, copied from `runs/` by
 
 ## 3. The mandatory use case, end to end
 
-**Primary evidence:** the pipeline [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1) — the
-mandatory requirement through GitHub Actions, with 28 model-written tests and the summary as
-the PR description. A CLI run of the same requirement is recorded in
-[`examples/llm-run/`](examples/llm-run/). The transcript below is the **offline fallback**
-(no key), shown because it is short and reproducible.
+**Primary evidence:** the pipeline [run](https://github.com/ummarvali/AgenticSoftware/actions/runs/36131504163) → [pull request #1](https://github.com/ummarvali/AgenticSoftware/pull/1)
+— the mandatory requirement through GitHub Actions, on `claude-sonnet-5`.
+
+**What the agents do, step by step.** Condensed from the recorded event log and metrics of a
+live run of this requirement ([`examples/llm-run/result.json`](examples/llm-run/)); in the
+pipeline the same lines stream in the *agent run → Run the agent* console:
+
+```
+[orchestrator] provider: llm                          <- Claude; per-stage deterministic fallback
+[LLM] analyze: ok in 17s (207+1516 tokens)
+[RequirementAnalyst] kind=greenfield domain=url_shortener (7 ambiguities, 12 FRs)
+[gate 1/3] requirement clarification: auto-approved   <- human with --interactive; in the pipeline
+                                                         the humans approve spend and acceptance
+[LLM] decompose: ok in 35s (256+4156 tokens)
+[TaskDecomposer] 29 tasks, 13 levels                   <- the model's task graph, checked and
+[gate 2/3] execution plan: auto-approved                  normalised before it is used
+[Architect] decided: design(durable) - NFRs imply durability/scale -> recommend the SQLite backend as default
+[LLM] design: ok in 33s (1612+3399 tokens)
+[Architect] designed 12 components, 7 API endpoints
+[orchestrator] level 3: running 5 tasks concurrently  <- independent tasks in parallel
+[CodeGenerator] decided: generate - no code yet -> generate from the design
+[LLM] codegen: ok in 283s (3242+38549 tokens)         <- code, openapi.yaml, README and tests in one
+[CodeGenerator] generated 9 files                         bundle, accepted only after the sandbox gate:
+                                                          safety scan, compile, its own tests
+[Architect] decided: reuse - architecture already committed; 'design_security' is covered by it
+  ... 23 of the 29 planned tasks are logged as reuse of the stage that already produced them
+[TestGenerator] decided: generate-tests - generate unit + integration tests for the code
+[DocGenerator] decided: generate-docs - generate README and architecture docs
+[Validator] 5/5 checks passed                         <- compiled, scanned, Ran 24 tests - OK
+[gate 3/3] final acceptance: auto-approved            <- never auto-accepts a failing report
+[SummaryWriter] engineering summary written
+[observability] 371s | 29 tasks, 8 parallel levels, 23 reused | 4 model calls, 52.9k tokens (~$0.49)
+```
+
+**What the model generated in the pipeline run** ([PR #1](https://github.com/ummarvali/AgenticSoftware/pull/1), code under
+`generated/20260925-115009-176/`; 28 tests pass, and the service was exercised over HTTP:
+create 201, redirect 302, analytics, 400/404/409 errors, SQLite tables):
+
+| Artifact | Purpose |
+| --- | --- |
+| `urlshortener/storage.py` | SQLite persistence: urls, users, click events, blacklist |
+| `urlshortener/shortcode.py`, `validation.py` | base62 short codes with collision checks; URL and alias validation |
+| `urlshortener/cache.py` | in-process cache for the redirect path |
+| `urlshortener/service.py` | create / resolve / delete / analytics logic |
+| `urlshortener/api.py`, `server.py` | HTTP API (standard library), configurable host, port and database path |
+| `openapi.yaml` | the API contract (OpenAPI 3.0.3) |
+| `tests/test_service.py`, `tests/test_api.py` | 16 unit tests + 12 API tests over real HTTP |
+| `README.md`, `ENGINEERING_SUMMARY.md` | how to run it (curl per endpoint); the engineering summary (also the PR description) |
+
+### Offline fallback (no key)
+
+The same requirement without a key runs the same agents on the deterministic engine — short,
+reproducible, and what CI runs:
 
 ```
 $ python -m agentic_sdlc "Build a scalable URL shortener service with APIs, persistence, and analytics."
 
 [RequirementAnalyst] kind=greenfield domain=url_shortener (3 ambiguities, 5 FRs)
 [TaskDecomposer] 6 tasks, 5 levels (design, code|docs, tests, validate, summary)
-
-[orchestrator] --- level 0: design ---
 [Architect] designed 5 components, 4 API endpoints
-[orchestrator] --- level 1: code, docs (parallel) ---   <- independent work, run concurrently
+[orchestrator] --- level 1: code, docs (parallel) ---
 [CodeGenerator] generated 9 files
 [DocGenerator] generated 2 documentation files
-[orchestrator] --- level 2: tests ---
 [TestGenerator] generated 3 test files
-[orchestrator] --- level 3: validate ---
-[Validator] 5/5 checks passed                      <- code compiled, tests executed, safety-scanned
-[orchestrator] --- level 4: summary ---
-
-Classification : greenfield (domain=url_shortener, confidence=0.92)
-Artifacts      : 15 files -> runs\...\artifacts
+[Validator] 5/5 checks passed
 Validation     : 5/5 checks passed (PASS)
 ```
 
-**What the fallback generated** (a real, runnable service — standard library only; this is
-what is committed as [`demo/`](demo/)):
-
-| Artifact | Purpose |
-| --- | --- |
-| `url_shortener/base62.py` | id ⇄ slug codec (short, dense, URL-safe codes) |
-| `url_shortener/store.py` | `Store` protocol + **InMemory** and **SQLite** backends |
-| `url_shortener/service.py` | validation, idempotent shorten, aliases, expiry, resolve, stats |
-| `url_shortener/analytics.py` | click aggregation (totals, top referrers) |
-| `url_shortener/api.py` | WSGI HTTP adapter (shorten / redirect / stats / health) |
-| `url_shortener/server.py` | server entrypoint; `SHORTENER_STORE=sqlite` + `SHORTENER_DB_PATH` select the durable backend |
-| `openapi.yaml` | the API contract |
-| `tests/test_*.py` | unit **and** integration tests (run by the validator) |
-| `README.md`, `docs/ARCHITECTURE.md`, `ENGINEERING_SUMMARY.md` | documentation |
-
+Its output for this requirement is committed as [`demo/`](demo/) (base62 codes, in-memory or
+SQLite store, WSGI API, `openapi.yaml`, unit and integration tests, a container image).
 You can run the generated service directly:
 
 ```powershell
@@ -450,25 +480,27 @@ python -m unittest discover -s tests -v              # its own tests pass
 ## 4. How it works — architecture & control flow
 
 ```
-  Requirement
-       │
-       ▼
-  Analyst ─► Decomposer ─►  DAG (by dependency level)
-  (normalize) (task graph)   ┌──────────────────────────┐
-       ▲                     │ Architect ─► CodeGen      │
-       │  human gates        │            ╲ DocGen  ╱    │
-       │ (clarify·plan·      │             ─► TestGen    │
-       │   accept)           └───────────┬──────────────┘
-       │                                 ▼
-       │                            ┌───────────┐  fail & repairable
-       │   every agent reads/       │ Validator │───────────────┐
-       │   writes the shared        └─────┬─────┘               ▼
-       │        BLACKBOARD ◄───────────── │ pass          ┌──────────┐
-       │   (state + decision log)         ▼               │  Repair  │
-       └───────────────────────────  SummaryWriter        └────┬─────┘
-                                          │   ▲   re-validate   │
-                                          ▼   └────────────────┘
-                                 artifacts + result.json
+ Issue (Agent request) ──► ⏸ agent-run: maintainer approves spend ──► GitHub Actions job
+                                                                            │
+ ┌────────────────────────────── Orchestrator (one run) ────────────────────▼──────────────────┐
+ │                                                                                             │
+ │  Analyst ──► Decomposer ──► DAG by dependency level (independent tasks run concurrently)    │
+ │  (normalize) (task graph)   Architect ─► [CodebaseAnalyst: brownfield] ─► CodeGen           │
+ │                             ─► TestGen ─► DocGen                                            │
+ │      │           │              │                   │                                       │
+ │      └───────────┴──────────────┴─── reasoning ─────┘                                       │
+ │                  Claude (claude-sonnet-5): analyze · decompose · design · code + tests      │
+ │                  └ per stage, on timeout / error / bad reply: deterministic fallback        │
+ │                  model code ─► sandbox gate: safety scan → compile → its own tests          │
+ │                               (one repair pass with the real failure)                       │
+ │                                                                                             │
+ │  Validator (5 checks; 6 for a change set) ── fail & repairable ──► Repair ─► re-validate    │
+ │  every agent reads/writes the shared BLACKBOARD (state + decision log)                      │
+ │  in-run gates: clarify · plan · accept (automatic in the pipeline; human with --interactive)│
+ │                                                                                             │
+ └───────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                             ▼
+      engineering summary + result.json ─► comment on the issue ─► ⏸ agent-acceptance ─► pull request
 ```
 
 Full diagrams and rationale live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). In short:
