@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from .analytics import AnalyticsService
+from .ratelimit import build_rate_limiter
 from .service import AliasError, InvalidURLError, ShortenerService
 
 _REASON = {
@@ -25,13 +26,22 @@ _REASON = {
 class WSGIApp:
     """Minimal router mapping HTTP requests onto the service.
 
-    ``limiter`` is optional: any object with ``allow(key) -> bool`` guards link
-    creation per client address (HTTP 429 when it says no)."""
+    ``limiter`` is a :class:`url_shortener.ratelimit.RateLimiter` guarding the
+    create and redirect endpoints (HTTP 429 when exceeded). If omitted, a
+    default limiter built from environment/config-file settings is used, so
+    rate limiting is on by default; pass ``limiter=False`` to disable it
+    explicitly (e.g. for isolated unit tests of unrelated behaviour).
+    """
 
     def __init__(self, service: ShortenerService | None = None, limiter=None) -> None:
         self.service = service or ShortenerService()
         self.analytics = AnalyticsService(self.service.store)
-        self.limiter = limiter
+        if limiter is None:
+            self.limiter = build_rate_limiter()
+        elif limiter is False:
+            self.limiter = None
+        else:
+            self.limiter = limiter
 
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
@@ -39,19 +49,50 @@ class WSGIApp:
         try:
             if path == "/healthz":
                 return self._json(start_response, 200, {"status": "ok"})
+            if path == "/metrics" and method == "GET":
+                return self._json(start_response, 200, self._metrics_payload())
             if path == "/api/shorten" and method == "POST":
-                if self.limiter and not self.limiter.allow(environ.get("REMOTE_ADDR", "?")):
-                    return self._json(start_response, 429, {"error": "rate limit exceeded"})
+                blocked = self._enforce_rate_limit("create", environ, start_response)
+                if blocked is not None:
+                    return blocked
                 return self._shorten(environ, start_response)
             if path.startswith("/api/stats/") and method == "GET":
                 return self._stats(start_response, path[len("/api/stats/") :])
             if method == "GET" and path != "/" and "/" not in path[1:]:
+                blocked = self._enforce_rate_limit("redirect", environ, start_response)
+                if blocked is not None:
+                    return blocked
                 return self._redirect(environ, start_response, path[1:])
             return self._json(start_response, 404, {"error": "not found"})
         except (InvalidURLError, AliasError) as exc:
             return self._json(start_response, 400, {"error": str(exc)})
         except Exception:  # defensive: never leak internals to the client
             return self._json(start_response, 500, {"error": "internal error"})
+
+    def _enforce_rate_limit(self, endpoint, environ, start_response):
+        """Return a WSGI response iterable if the client is rate limited,
+        else ``None`` to let the caller proceed."""
+        if not self.limiter:
+            return None
+        result = self.limiter.check(endpoint, environ)
+        if result.allowed:
+            return None
+        body = json.dumps({"error": "rate limit exceeded"}).encode("utf-8")
+        retry_after = max(0, int(result.retry_after) + 1)
+        headers = [
+            ("Content-Type", "application/json"),
+            ("Content-Length", str(len(body))),
+            ("Retry-After", str(retry_after)),
+            ("X-RateLimit-Limit", str(result.limit)),
+            ("X-RateLimit-Remaining", str(result.remaining)),
+        ]
+        start_response(f"429 {_REASON[429]}", headers)
+        return [body]
+
+    def _metrics_payload(self) -> dict:
+        if self.limiter and hasattr(self.limiter, "metrics_snapshot"):
+            return {"rate_limit": self.limiter.metrics_snapshot()}
+        return {"rate_limit": None}
 
     def _shorten(self, environ, start_response):
         try:
